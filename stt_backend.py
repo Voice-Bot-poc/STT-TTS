@@ -29,7 +29,8 @@ vosk_model = Model("models/vosk-model-small-en-us-0.15")
 
 def transcribe_faster_whisper(audio_np):
 
-    segments, info = fw_model.transcribe(audio_np)
+    segments, info = fw_model.transcribe(audio_np,
+                                         beam_size=5,vad_filter=False)
 
     text = ""
     for segment in segments:

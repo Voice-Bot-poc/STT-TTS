@@ -5,37 +5,66 @@ import numpy as np
 import requests
 import threading
 import time
+import queue
+from datetime import datetime
 
 app = FastAPI()
 
 SAMPLE_RATE = 16000
 FRAME_DURATION = 20
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION / 1000)
-transcript = []
+
 vad = webrtcvad.Vad(2)
 
-SILENCE_LIMIT = 35
-
+SILENCE_LIMIT = 20
+MAX_CHUNK_DURATION = 10.0   # seconds
+OVERLAP_DURATION = 0.8
+OVERLAP_BYTES = int(OVERLAP_DURATION * SAMPLE_RATE * 2)
 speech_buffer = []
 silence_counter = 0
 speech_active = False
 
-STT_SERVER = "https://relaxation-tracking-theft-authentication.trycloudflare.com/transcribe"
+audio_queue = queue.Queue()
+
+STT_SERVER = "https://mile-laid-compete-vii.trycloudflare.com/transcribe"
 
 
-def send_to_stt(audio_chunk):
+# -----------------------------
+# STT WORKER (Consumer)
+# -----------------------------
 
-    print("Sending chunk to STT...")
+def stt_worker():
 
-    files = {
-        "file": ("speech.raw", audio_chunk, "application/octet-stream")
-    }
+    while True:
 
-    response = requests.post(STT_SERVER, files=files)
-    transcript = response.json()["faster_whisper"]
-    with open(f"transcript.txt","a") as f:
-        f.write(transcript)
-    print("STT Response:", response.json())
+        audio_chunk = audio_queue.get()
+
+        try:
+
+            print("Sending chunk to STT...")
+
+            files = {
+                "file": ("speech.raw", audio_chunk, "application/octet-stream")
+            }
+
+            response = requests.post(STT_SERVER, files=files)
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            transcript = response.json()["faster_whisper"]
+
+            with open("transcript.txt", "a") as f:
+                f.write(f"[{timestamp}] {transcript}\n")
+
+            print("STT Response:", transcript)
+
+        except Exception as e:
+            print("STT Error:", e)
+
+        audio_queue.task_done()
+
+
+# -----------------------------
+# AUDIO CALLBACK (Producer)
+# -----------------------------
 
 def audio_callback(indata, frames, time_info, status):
 
@@ -62,20 +91,46 @@ def audio_callback(indata, frames, time_info, status):
             silence_counter += 1
             speech_buffer.append(audio_frame)
 
-        if speech_active and silence_counter > SILENCE_LIMIT:
+    # Calculate chunk duration
+    audio_chunk = b''.join(speech_buffer)
+    duration = len(audio_chunk) / 2 / SAMPLE_RATE
 
+    # Condition 1: silence detected
+    silence_trigger = speech_active and silence_counter > SILENCE_LIMIT
+
+    # Condition 2: chunk too long
+    max_duration_trigger = speech_active and duration > MAX_CHUNK_DURATION
+
+    if silence_trigger or max_duration_trigger:
+
+        if silence_trigger:
             print("Speech ended")
 
-            audio_chunk = b''.join(speech_buffer)
+        if max_duration_trigger:
+            print("Max chunk duration reached")
 
-            duration = len(audio_chunk) / 2 / SAMPLE_RATE
-            print("Chunk duration:", round(duration, 2))
+        print("Chunk duration:", round(duration, 2))
 
-            send_to_stt(audio_chunk)
-            speech_buffer = []
-            silence_counter = 0
+        # Send chunk to STT
+        audio_queue.put(audio_chunk)
+
+        # -------- overlap handling --------
+        overlap_audio = audio_chunk[-OVERLAP_BYTES:]
+
+        speech_buffer = [overlap_audio]
+
+        # reset silence counter
+        silence_counter = 0
+
+        # keep speech_active True if duration triggered
+        if silence_trigger:
             speech_active = False
+        else:
+            speech_active = True
 
+# -----------------------------
+# MICROPHONE
+# -----------------------------
 
 def start_microphone():
 
@@ -90,13 +145,19 @@ def start_microphone():
 
         while True:
             time.sleep(1)
-    
+
+
+# -----------------------------
+# START THREADS
+# -----------------------------
 
 @app.on_event("startup")
-def start_audio_thread():
+def start_threads():
 
-    thread = threading.Thread(target=start_microphone)
-    thread.daemon = True
-    thread.start()
+    mic_thread = threading.Thread(target=start_microphone)
+    mic_thread.daemon = True
+    mic_thread.start()
 
-# uvicorn vad_backend:app --host 0.0.0.0 --port 8000
+    worker_thread = threading.Thread(target=stt_worker)
+    worker_thread.daemon = True
+    worker_thread.start()
