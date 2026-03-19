@@ -1,0 +1,12 @@
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# TTS engine
+gTTS>=2.5.1
+
+# Audio transcoding — only needed for wav/ogg output; safe to remove if mp3-only
+pydub>=0.25.1
+
+# Pydantic (FastAPI uses this for request/response validation)
+pydantic>=2.0.0
