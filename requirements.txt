@@ -1,12 +1,38 @@
-# Web framework
+# ---------------------------------------------------------------------------
+# requirements.txt
+# Full dependency list for the VoiceBot STT-TTS + Pipeline microservice.
+# Install with:  pip install -r requirements.txt
+# ---------------------------------------------------------------------------
+
+# ── Web framework ────────────────────────────────────────────────────────────
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
+# Required for UploadFile + Form (multipart) support in FastAPI
+python-multipart>=0.0.9
 
-# TTS engine
+# ── Data validation ──────────────────────────────────────────────────────────
+pydantic>=2.0.0
+
+# ── TTS engine ───────────────────────────────────────────────────────────────
 gTTS>=2.5.1
-
-# Audio transcoding — only needed for wav/ogg output; safe to remove if mp3-only
+# Audio transcoding (wav/ogg output); safe to remove if mp3-only
 pydub>=0.25.1
 
-# Pydantic (FastAPI uses this for request/response validation)
-pydantic>=2.0.0
+# ── STT engine (local Whisper — no API key needed) ───────────────────────────
+openai-whisper>=20231117
+# Whisper dependencies (usually auto-installed; listed for clarity)
+torch>=2.0.0
+numpy>=1.24.0
+ffmpeg-python>=0.2.0   # Python bindings; also install ffmpeg binary on your OS
+
+# ── LLM — Anthropic Claude ───────────────────────────────────────────────────
+anthropic>=0.25.0
+
+# ── Database — async MySQL via SQLAlchemy ────────────────────────────────────
+sqlalchemy>=2.0.0
+aiomysql>=0.2.0
+# For password characters that need URL-escaping in the connection string
+PyMySQL>=1.1.0         # aiomysql uses PyMySQL under the hood
+
+# ── Environment variable loading ─────────────────────────────────────────────
+python-dotenv>=1.0.0

@@ -1,11 +1,16 @@
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
-from pydantic import BaseModel, Field
 import base64
 
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
+
+import db as _db  # alias to avoid shadowing any built-in
+from models import ProcessResponse
+from pipeline import run_pipeline
 from tts_service import get_tts_service, TTSRequest, AudioFormat, VoiceID
 
 # ---------------------------------------------------------------------------
@@ -18,10 +23,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app_: FastAPI):
+    """Startup / shutdown handler — dispose MySQL connections cleanly on exit."""
+    yield  # startup: nothing to do (lazy init in db.py)
+    await _db.dispose_engine()
+
+
 app = FastAPI(
-    title="TTS Microservice",
-    description="Converts text to audio. Returns base64-encoded audio in JSON or raw audio bytes.",
-    version="1.0.0",
+    title="VoiceBot STT-TTS Microservice",
+    description=(
+        "Converts text to audio (/tts, /tts/stream) and runs the full "
+        "STT → LLM → MySQL → TTS pipeline (/process)."
+    ),
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 tts_service = get_tts_service()
@@ -134,6 +151,48 @@ def text_to_speech_raw(body: TTSRequestBody):
             "X-Char-Count": str(result.char_count),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /process — Full pipeline: STT → LLM → MySQL → TTS
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/process",
+    response_model=ProcessResponse,
+    tags=["Pipeline"],
+    summary="Audio → transcript → LLM reply → audio (full pipeline)",
+)
+async def process_audio(
+    audio_file: UploadFile = File(
+        ...,
+        description="Audio file to transcribe (wav, mp3, m4a, …)",
+    ),
+    session_id: str = Form(
+        ...,
+        min_length=1,
+        description="Unique session/conversation identifier for history lookup",
+    ),
+):
+    """
+    Full VoiceBot pipeline in one call:
+
+    1. **STT** — transcribe the uploaded audio with Whisper (local)
+    2. **DB fetch** — load last 5 conversation turns for `session_id`
+    3. **LLM** — call Anthropic Claude with history + transcript
+    4. **DB write** — persist the new exchange
+    5. **TTS** — synthesise the LLM reply to MP3 audio
+
+    Returns the transcript, LLM response, base64 audio, and per-stage latency.
+
+    On failure in any stage, returns `{ "stage": "...", "detail": "..." }` with HTTP 500.
+
+    **Multipart form fields:**
+    - `audio_file` — the audio file
+    - `session_id` — string identifier for the conversation session
+    """
+    audio_bytes = await audio_file.read()
+    return await run_pipeline(session_id=session_id, audio_bytes=audio_bytes)
 
 
 # ---------------------------------------------------------------------------
