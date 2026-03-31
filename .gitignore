@@ -1,4 +1,4 @@
 vbenv/
-test_outputs/
+test/test_outputs/
 __pycache__/
-test.py
+test/test.py

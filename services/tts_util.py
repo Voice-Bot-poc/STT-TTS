@@ -14,7 +14,7 @@ The pipeline always requests mp3 (no transcoding needed) and uses the default
 import base64
 import logging
 
-from tts_service import _synthesise_gtts, _estimate_duration
+from services.tts_service import _synthesise_gtts, _estimate_duration
 
 logger = logging.getLogger(__name__)
 

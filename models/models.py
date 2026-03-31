@@ -29,12 +29,12 @@ class ProcessRequest(BaseModel):
 
 class LatencyBreakdown(BaseModel):
     """Wall-clock milliseconds for each pipeline stage."""
-    stt: float = Field(..., description="Speech-to-text (Whisper) duration in ms")
-    db_fetch: float = Field(..., description="MySQL history fetch duration in ms")
-    llm: float = Field(..., description="Anthropic LLM call duration in ms")
-    db_write: float = Field(..., description="MySQL history write duration in ms")
-    tts: float = Field(..., description="Text-to-speech (gTTS) duration in ms")
-    total: float = Field(..., description="End-to-end wall-clock duration in ms")
+    stt: int
+    db_fetch:int
+    llm: int
+    db_write: int
+    tts: int
+    total: int
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -8,10 +10,13 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-import db as _db  # alias to avoid shadowing any built-in
-from models import ProcessResponse
-from pipeline import run_pipeline
-from tts_service import get_tts_service, TTSRequest, AudioFormat, VoiceID
+from services import db as _db  # alias to avoid shadowing any built-in
+from models.models import ProcessResponse
+from services.pipeline import run_pipeline
+from services.tts_service import get_tts_service, TTSRequest, AudioFormat, VoiceID
+from fastapi.responses import RedirectResponse
+
+from services.pipeline import run_chat_pipeline
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -23,6 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
@@ -70,6 +76,10 @@ def health_check():
     """Quick liveness probe."""
     return {"status": "ok"}
 
+@app.get("/", tags=["Meta"])
+def root():
+    """Redirect root to health check."""
+    return RedirectResponse(url="/health")
 
 @app.post(
     "/tts",
@@ -194,6 +204,17 @@ async def process_audio(
     audio_bytes = await audio_file.read()
     return await run_pipeline(session_id=session_id, audio_bytes=audio_bytes)
 
+class ChatRequest(BaseModel):
+    text: str
+    session_id: str
+
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    return await run_chat_pipeline(
+        session_id=req.session_id,
+        text=req.text,
+    )
 
 # ---------------------------------------------------------------------------
 # Entry point  (python main.py)

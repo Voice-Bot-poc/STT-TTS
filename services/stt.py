@@ -62,6 +62,8 @@ def _transcribe_sync(audio_bytes: bytes) -> str:
             suffix=".wav", delete=False, prefix="whisper_"
         ) as tmp:
             tmp.write(audio_bytes)
+            tmp.flush()  # ADD THIS LINE - ensure bytes are written to disk
+            os.fsync(tmp.fileno())
             tmp_path = tmp.name
 
         logger.info("Transcribing %d bytes from %s …", len(audio_bytes), tmp_path)
