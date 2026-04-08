@@ -28,10 +28,11 @@ logger = logging.getLogger(__name__)
 # ClinicQueue config
 # ---------------------------------------------------------------------------
 
-_CLINICQUEUE_BASE_URL = os.getenv(
-    "CLINICQUEUE_BASE_URL", 
-    "https://identified-fill-battery-victorian.trycloudflare.com"
-)
+# _CLINICQUEUE_BASE_URL = os.getenv(
+#     "CLINICQUEUE_BASE_URL",
+#     "https://identified-fill-battery-victorian.trycloudflare.com"
+# )
+_CLINICQUEUE_BASE_URL = "https://unallegorical-lauditorily-elliot.ngrok-free.dev"
 _VOICE_CHAT_ENDPOINT = f"{_CLINICQUEUE_BASE_URL}/api/voice/chat"
 
 
@@ -58,6 +59,7 @@ async def run_pipeline(session_id: str, audio_bytes: bytes) -> ProcessResponse:
     # ------------------------------------------------------------------ CLINICQUEUE
     t0 = time.perf_counter()
     try:
+        print("Calling:", _VOICE_CHAT_ENDPOINT)
         response_text, intent, booking_completed = await _call_clinicqueue(
             session_id=session_id,
             transcript=transcript,

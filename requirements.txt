@@ -36,3 +36,6 @@ PyMySQL>=1.1.0         # aiomysql uses PyMySQL under the hood
 
 # ── Environment variable loading ─────────────────────────────────────────────
 python-dotenv>=1.0.0
+
+# ── HTTP client for ClinicQueue ──────────────────────────────────────────────
+httpx>=0.27.0

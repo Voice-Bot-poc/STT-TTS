@@ -1,3 +1,7 @@
+# NOTE: llm.py is no longer called by pipeline.py.
+# ClinicQueue backend now handles all LLM calls via /api/voice/chat.
+# This file is kept for reference and potential standalone testing only.
+
 """
 llm.py — LLM integration for the VoiceBot pipeline (Ollama-compatible).
 
