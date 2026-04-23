@@ -8,6 +8,10 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+_TARGET_WAV_SAMPLE_RATE = 48000
+_TARGET_WAV_CHANNELS = 1
+_TARGET_WAV_SAMPLE_WIDTH = 2
+
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
@@ -80,6 +84,13 @@ def _synthesise_gtts(text: str, slow: bool, fmt: AudioFormat) -> bytes:
         from pydub import AudioSegment  # optional dependency
 
         audio = AudioSegment.from_file(io.BytesIO(mp3_bytes), format="mp3")
+        if fmt == "wav":
+            # Force deterministic WebRTC-friendly PCM format.
+            audio = (
+                audio.set_frame_rate(_TARGET_WAV_SAMPLE_RATE)
+                .set_channels(_TARGET_WAV_CHANNELS)
+                .set_sample_width(_TARGET_WAV_SAMPLE_WIDTH)
+            )
         out_buf = io.BytesIO()
         audio.export(out_buf, format=fmt)
         out_buf.seek(0)

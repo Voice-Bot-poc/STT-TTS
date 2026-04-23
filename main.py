@@ -1,8 +1,10 @@
 from dotenv import load_dotenv
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
+from functools import partial
 
 import base64
 
@@ -67,6 +69,10 @@ class TTSResponseBody(BaseModel):
     char_count: int = Field(..., description="Number of characters synthesised")
 
 
+class SynthesiseRequestBody(BaseModel):
+    text: str = Field(..., min_length=1, description="Text to synthesise for call greeting")
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -120,6 +126,16 @@ def text_to_speech(body: TTSRequestBody):
         format=result.format,
         char_count=result.char_count,
     )
+
+
+@app.post("/synthesise", tags=["TTS"], summary="Text to base64 wav for call playback")
+async def synthesise(body: SynthesiseRequestBody):
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        partial(tts_service.synthesise, TTSRequest(text=body.text, voice="default", format="wav")),
+    )
+    return {"audio_base64": result.audio_base64}
 
 
 @app.post(

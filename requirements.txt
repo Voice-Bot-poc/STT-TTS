@@ -39,3 +39,6 @@ python-dotenv>=1.0.0
 
 # ── HTTP client for ClinicQueue ──────────────────────────────────────────────
 httpx>=0.27.0
+
+# ── Transcript language filtering ─────────────────────────────────────────────
+langdetect>=1.0.9

@@ -10,6 +10,7 @@ Stages:
 import logging
 import time
 import os
+import threading
 import httpx
 from asyncio import get_event_loop, CancelledError
 from functools import partial
@@ -32,8 +33,11 @@ logger = logging.getLogger(__name__)
 #     "CLINICQUEUE_BASE_URL",
 #     "https://identified-fill-battery-victorian.trycloudflare.com"
 # )
-_CLINICQUEUE_BASE_URL = "https://unallegorical-lauditorily-elliot.ngrok-free.dev"
+_CLINICQUEUE_BASE_URL = "http://localhost:5000"
 _VOICE_CHAT_ENDPOINT = f"{_CLINICQUEUE_BASE_URL}/api/voice/chat"
+_LLM_TIMEOUT_SECONDS = float(os.getenv("CLINICQUEUE_TIMEOUT_SECONDS", "15.0"))
+_STT_SLOW_THRESHOLD_MS = float(os.getenv("STT_SLOW_THRESHOLD_MS", "30000"))
+_PIPELINE_SINGLE_FLIGHT = threading.Lock()
 
 
 def _ms(start: float, end: float) -> float:
@@ -41,80 +45,137 @@ def _ms(start: float, end: float) -> float:
 
 
 async def run_pipeline(session_id: str, audio_bytes: bytes) -> ProcessResponse:
+    if not _PIPELINE_SINGLE_FLIGHT.acquire(blocking=False):
+        raise HTTPException(status_code=204)
+
     pipeline_start = time.perf_counter()
-
-    # ------------------------------------------------------------------ STT
-    t0 = time.perf_counter()
+    logger.info("[Pipeline] session=%s start", session_id)
     try:
-        transcript = await stt.transcribe(audio_bytes)
-    except Exception as exc:
-        logger.exception("STT stage failed")
-        raise HTTPException(
-            status_code=500,
-            detail={"stage": "stt", "detail": str(exc)},
-        )
-    t_stt = _ms(t0, time.perf_counter())
-    logger.info("[STT] %.1f ms → %r", t_stt, transcript[:80])
+        # ------------------------------------------------------------------ STT
+        t0 = time.perf_counter()
+        if stt.should_skip_audio(audio_bytes):
+            transcript = ""
+        else:
+            try:
+                transcript = await stt.transcribe(audio_bytes)
+            except Exception as exc:
+                logger.warning("STT stage failed; returning empty transcript for this chunk: %s", exc)
+                transcript = ""
+        t_stt = _ms(t0, time.perf_counter())
 
-    # ------------------------------------------------------------------ CLINICQUEUE
-    t0 = time.perf_counter()
-    try:
-        print("Calling:", _VOICE_CHAT_ENDPOINT)
-        response_text, intent, booking_completed = await _call_clinicqueue(
+        if t_stt > _STT_SLOW_THRESHOLD_MS:
+            t_total = _ms(pipeline_start, time.perf_counter())
+            logger.info("[Pipeline] session=%s slow-stt %.1f ms -> wait signal", session_id, t_stt)
+            return ProcessResponse(
+                session_id=session_id,
+                transcript=transcript,
+                response_text="Wait",
+                audio_base64="",
+                audio_format="wav",
+                latency_ms=LatencyBreakdown(
+                    stt=int(t_stt),
+                    db_fetch=0,
+                    llm=0,
+                    db_write=0,
+                    tts=0,
+                    total=int(t_total),
+                ),
+            )
+
+        if not transcript or not transcript.strip():
+            t_total = _ms(pipeline_start, time.perf_counter())
+            logger.info("[Pipeline] session=%s stop total=%.1f ms", session_id, t_total)
+
+            return ProcessResponse(
+                session_id=session_id,
+                transcript="",
+                response_text="",
+                audio_base64="",
+                audio_format="wav",
+                latency_ms=LatencyBreakdown(
+                    stt=int(t_stt),
+                    db_fetch=0,
+                    llm=0,
+                    db_write=0,
+                    tts=0,
+                    total=int(t_total),
+                ),
+            )
+
+        logger.info("[STT] %.1f ms → %r", t_stt, transcript[:80])
+
+        # ------------------------------------------------------------------ CLINICQUEUE
+        t0 = time.perf_counter()
+        try:
+            response_text, intent, booking_completed = await _call_clinicqueue(
+                session_id=session_id,
+                transcript=transcript,
+            )
+        except Exception as exc:
+            logger.exception("ClinicQueue stage failed")
+            raise HTTPException(
+                status_code=500,
+                detail={"stage": "clinicqueue", "detail": str(exc)},
+            )
+        t_clinicqueue = _ms(t0, time.perf_counter())
+
+        if not response_text.strip():
+            t_total = _ms(pipeline_start, time.perf_counter())
+            logger.info("[Pipeline] session=%s stop total=%.1f ms", session_id, t_total)
+
+            return ProcessResponse(
+                session_id=session_id,
+                transcript=transcript,
+                response_text="",
+                audio_base64="",
+                audio_format="wav",
+                latency_ms=LatencyBreakdown(
+                    stt=int(t_stt),
+                    db_fetch=0,
+                    llm=int(t_clinicqueue),
+                    db_write=0,
+                    tts=0,
+                    total=int(t_total),
+                ),
+            )
+
+        # ------------------------------------------------------------------ TTS
+        t0 = time.perf_counter()
+        try:
+            loop = get_event_loop()
+            audio_base64, _duration = await loop.run_in_executor(
+                None,
+                partial(tts_util.synthesise_text, response_text),
+            )
+        except Exception as exc:
+            logger.exception("TTS stage failed")
+            raise HTTPException(
+                status_code=500,
+                detail={"stage": "tts", "detail": str(exc)},
+            )
+        t_tts = _ms(t0, time.perf_counter())
+
+        # ------------------------------------------------------------------ TOTALS
+        t_total = _ms(pipeline_start, time.perf_counter())
+        logger.info("[Pipeline] session=%s stop total=%.1f ms", session_id, t_total)
+
+        return ProcessResponse(
             session_id=session_id,
             transcript=transcript,
+            response_text=response_text,
+            audio_base64=audio_base64,
+            audio_format="wav",
+            latency_ms=LatencyBreakdown(
+                stt=int(t_stt),
+                db_fetch=0,       # no longer used
+                llm=int(t_clinicqueue),  # reuse field for ClinicQueue latency
+                db_write=0,       # no longer used
+                tts=int(t_tts),
+                total=int(t_total),
+            ),
         )
-    except Exception as exc:
-        logger.exception("ClinicQueue stage failed")
-        raise HTTPException(
-            status_code=500,
-            detail={"stage": "clinicqueue", "detail": str(exc)},
-        )
-    t_clinicqueue = _ms(t0, time.perf_counter())
-    logger.info(
-        "[ClinicQueue] %.1f ms → intent=%s booking=%s reply=%r",
-        t_clinicqueue, intent, booking_completed, response_text[:80]
-    )
-
-    # ------------------------------------------------------------------ TTS
-    t0 = time.perf_counter()
-    try:
-        loop = get_event_loop()
-        audio_base64, _duration = await loop.run_in_executor(
-            None,
-            partial(tts_util.synthesise_text, response_text),
-        )
-    except Exception as exc:
-        logger.exception("TTS stage failed")
-        raise HTTPException(
-            status_code=500,
-            detail={"stage": "tts", "detail": str(exc)},
-        )
-    t_tts = _ms(t0, time.perf_counter())
-    logger.info("[TTS] %.1f ms → %d b64 chars", t_tts, len(audio_base64))
-
-    # ------------------------------------------------------------------ TOTALS
-    t_total = _ms(pipeline_start, time.perf_counter())
-    logger.info(
-        "[Pipeline] total=%.1f ms  (stt=%.1f clinicqueue=%.1f tts=%.1f)",
-        t_total, t_stt, t_clinicqueue, t_tts,
-    )
-
-    return ProcessResponse(
-        session_id=session_id,
-        transcript=transcript,
-        response_text=response_text,
-        audio_base64=audio_base64,
-        audio_format="mp3",
-        latency_ms=LatencyBreakdown(
-            stt=int(t_stt),
-            db_fetch=0,       # no longer used
-            llm=int(t_clinicqueue),  # reuse field for ClinicQueue latency
-            db_write=0,       # no longer used
-            tts=int(t_tts),
-            total=int(t_total),
-        ),
-    )
+    finally:
+        _PIPELINE_SINGLE_FLIGHT.release()
 
 async def run_chat_pipeline(session_id: str, text: str) -> dict:
     """
@@ -169,9 +230,20 @@ async def _call_clinicqueue(
         "sessionId": session_id,
     }
 
+    timeout = httpx.Timeout(
+        timeout=_LLM_TIMEOUT_SECONDS,
+        connect=min(1.5, _LLM_TIMEOUT_SECONDS),
+        read=_LLM_TIMEOUT_SECONDS,
+        write=min(1.5, _LLM_TIMEOUT_SECONDS),
+        pool=min(1.0, _LLM_TIMEOUT_SECONDS),
+    )
+
+    request_start = time.perf_counter()
+
     try:
-        async with httpx.AsyncClient(timeout=100.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(_VOICE_CHAT_ENDPOINT, json=payload)
+        _ = _ms(request_start, time.perf_counter())
 
         if response.status_code != 200:
             raise RuntimeError(
@@ -185,9 +257,8 @@ async def _call_clinicqueue(
         booking_completed = data.get("bookingCompleted", False)
 
         if not response_text:
-            raise RuntimeError("ClinicQueue returned empty responseText")
+            return "", intent, booking_completed
 
         return response_text, intent, booking_completed
-    except (httpx.ReadTimeout, CancelledError):
-        logger.error("ClinicQueue/LLM took too long to respond (>90s)")
-        return "I'm sorry, I'm having trouble connecting to my brain right now. Can you repeat that?", "Error", False
+    except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout, CancelledError):
+        return "", "Timeout", False
