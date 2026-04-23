@@ -69,7 +69,7 @@ def _synthesise_gtts(text: str, slow: bool, fmt: AudioFormat) -> bytes:
     """
     from gtts import gTTS  # lazy import so the module is optional at import time
 
-    tts = gTTS(text=text, lang="en", slow=slow)
+    tts = gTTS(text=text, lang="en", slow=False)
 
     buf = io.BytesIO()
     tts.write_to_fp(buf)
