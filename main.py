@@ -2,13 +2,15 @@ from dotenv import load_dotenv
 
 import asyncio
 import logging
+import json
 from contextlib import asynccontextmanager
 from typing import Optional
 from functools import partial
+from uuid import uuid4
 
 import base64
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -219,6 +221,60 @@ async def process_audio(
     """
     audio_bytes = await audio_file.read()
     return await run_pipeline(session_id=session_id, audio_bytes=audio_bytes)
+
+@app.websocket("/ws/session")
+async def websocket_session(websocket: WebSocket):
+    await websocket.accept()
+
+    session_id = str(uuid4())
+    audio_buffer = bytearray()
+
+    try:
+        while True:
+            message = await websocket.receive()
+
+            if message.get("bytes") is not None:
+                audio_buffer.extend(message["bytes"])
+                continue
+
+            text = message.get("text")
+            if text is None:
+                continue
+
+            try:
+                control = json.loads(text)
+            except json.JSONDecodeError:
+                logger.warning("WebSocket session=%s received invalid JSON control frame", session_id)
+                continue
+
+            message_type = control.get("type")
+
+            if message_type == "barge_in":
+                logger.info(
+                    "WebSocket session=%s barge_in turn_id=%s",
+                    session_id,
+                    control.get("turn_id"),
+                )
+                continue
+
+            if message_type != "end_of_utterance":
+                logger.warning("WebSocket session=%s received unknown control type=%s", session_id, message_type)
+                continue
+
+            if not audio_buffer:
+                logger.warning("WebSocket session=%s end_of_utterance with no audio", session_id)
+                continue
+
+            turn_id = str(uuid4())
+            result = await run_pipeline(session_id=session_id, audio_bytes=bytes(audio_buffer))
+            audio_bytes = base64.b64decode(result.audio_base64)
+
+            await websocket.send_text(json.dumps({"type": "turn_id", "turn_id": turn_id}))
+            await websocket.send_bytes(audio_bytes)
+
+            audio_buffer.clear()
+    except WebSocketDisconnect:
+        logger.info("WebSocket session=%s disconnected", session_id)
 
 class ChatRequest(BaseModel):
     text: str
