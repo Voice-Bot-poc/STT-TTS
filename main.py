@@ -1,51 +1,43 @@
 from dotenv import load_dotenv
 
 import asyncio
-import logging
+import base64
 import json
+import logging
 from contextlib import asynccontextmanager
-from typing import Optional
 from functools import partial
+from typing import Optional
 from uuid import uuid4
 
-import base64
-
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, Field
 
-from services import db as _db  # alias to avoid shadowing any built-in
-from models.models import ProcessResponse
-from services.pipeline import run_pipeline
-from services.tts_service import get_tts_service, TTSRequest, AudioFormat, VoiceID
-from fastapi.responses import RedirectResponse
+from services import db as _db
+from services.pipeline import run_chat_pipeline, run_pipeline
+from services.tts_service import AudioFormat, get_tts_service, TTSRequest, VoiceID
 
-from services.pipeline import run_chat_pipeline
-
-# ---------------------------------------------------------------------------
-# App setup
-# ---------------------------------------------------------------------------
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    format="%(asctime)s  %(levelname)-8s  %(name)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
-    """Startup / shutdown handler — dispose MySQL connections cleanly on exit."""
-    yield  # startup: nothing to do (lazy init in db.py)
+    yield
     await _db.dispose_engine()
 
 
 app = FastAPI(
     title="VoiceBot STT-TTS Microservice",
     description=(
-        "Converts text to audio (/tts, /tts/stream) and runs the full "
-        "STT → LLM → MySQL → TTS pipeline (/process)."
+        "Converts text to audio (/tts, /tts/stream) and runs voice sessions "
+        "over WebSocket (/ws/session)."
     ),
     version="2.0.0",
     lifespan=lifespan,
@@ -53,10 +45,6 @@ app = FastAPI(
 
 tts_service = get_tts_service()
 
-
-# ---------------------------------------------------------------------------
-# Request / Response schemas
-# ---------------------------------------------------------------------------
 
 class TTSRequestBody(BaseModel):
     text: str = Field(..., min_length=1, description="Text to synthesise")
@@ -75,39 +63,23 @@ class SynthesiseRequestBody(BaseModel):
     text: str = Field(..., min_length=1, description="Text to synthesise for call greeting")
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
 @app.get("/health", tags=["Meta"])
 def health_check():
-    """Quick liveness probe."""
     return {"status": "ok"}
+
 
 @app.get("/", tags=["Meta"])
 def root():
-    """Redirect root to health check."""
     return RedirectResponse(url="/health")
+
 
 @app.post(
     "/tts",
     response_model=TTSResponseBody,
     tags=["TTS"],
-    summary="Text → audio (JSON / base64)",
+    summary="Text to audio (JSON / base64)",
 )
 def text_to_speech(body: TTSRequestBody):
-    """
-    Convert text to audio.
-
-    Returns a JSON body with base64-encoded audio and metadata.
-    Decode `audio_base64` on the client side to get raw audio bytes.
-
-    **Example**
-    ```
-    POST /tts
-    { "text": "Hello world", "voice": "default", "format": "mp3" }
-    ```
-    """
     try:
         result = tts_service.synthesise(
             TTSRequest(
@@ -143,17 +115,10 @@ async def synthesise(body: SynthesiseRequestBody):
 @app.post(
     "/tts/stream",
     tags=["TTS"],
-    summary="Text → audio (raw binary)",
+    summary="Text to audio (raw binary)",
     response_class=Response,
 )
 def text_to_speech_raw(body: TTSRequestBody):
-    """
-    Same as `/tts` but returns the raw audio file directly
-    (Content-Type: audio/mpeg | audio/wav | audio/ogg).
-
-    Useful when you want to pipe the response straight into a player
-    instead of parsing JSON.
-    """
     try:
         result = tts_service.synthesise(
             TTSRequest(
@@ -180,47 +145,6 @@ def text_to_speech_raw(body: TTSRequestBody):
         },
     )
 
-
-# ---------------------------------------------------------------------------
-# POST /process — Full pipeline: STT → LLM → MySQL → TTS
-# ---------------------------------------------------------------------------
-
-@app.post(
-    "/process",
-    response_model=ProcessResponse,
-    tags=["Pipeline"],
-    summary="Audio → transcript → LLM reply → audio (full pipeline)",
-)
-async def process_audio(
-    audio_file: UploadFile = File(
-        ...,
-        description="Audio file to transcribe (wav, mp3, m4a, …)",
-    ),
-    session_id: str = Form(
-        ...,
-        min_length=1,
-        description="Unique session/conversation identifier for history lookup",
-    ),
-):
-    """
-    Full VoiceBot pipeline in one call:
-
-    1. **STT** — transcribe the uploaded audio with Whisper (local)
-    2. **DB fetch** — load last 5 conversation turns for `session_id`
-    3. **LLM** — call Anthropic Claude with history + transcript
-    4. **DB write** — persist the new exchange
-    5. **TTS** — synthesise the LLM reply to MP3 audio
-
-    Returns the transcript, LLM response, base64 audio, and per-stage latency.
-
-    On failure in any stage, returns `{ "stage": "...", "detail": "..." }` with HTTP 500.
-
-    **Multipart form fields:**
-    - `audio_file` — the audio file
-    - `session_id` — string identifier for the conversation session
-    """
-    audio_bytes = await audio_file.read()
-    return await run_pipeline(session_id=session_id, audio_bytes=audio_bytes)
 
 @app.websocket("/ws/session")
 async def websocket_session(websocket: WebSocket):
@@ -276,6 +200,7 @@ async def websocket_session(websocket: WebSocket):
     except WebSocketDisconnect:
         logger.info("WebSocket session=%s disconnected", session_id)
 
+
 class ChatRequest(BaseModel):
     text: str
     session_id: str
@@ -288,10 +213,8 @@ async def chat(req: ChatRequest):
         text=req.text,
     )
 
-# ---------------------------------------------------------------------------
-# Entry point  (python main.py)
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
