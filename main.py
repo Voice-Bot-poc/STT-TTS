@@ -191,10 +191,9 @@ async def websocket_session(websocket: WebSocket):
 
             turn_id = str(uuid4())
             result = await run_pipeline(session_id=session_id, audio_bytes=bytes(audio_buffer))
-            audio_bytes = base64.b64decode(result.audio_base64)
 
             await websocket.send_text(json.dumps({"type": "turn_id", "turn_id": turn_id}))
-            await websocket.send_bytes(audio_bytes)
+            await websocket.send_bytes(result.audio_bytes)
 
             audio_buffer.clear()
     except WebSocketDisconnect:
