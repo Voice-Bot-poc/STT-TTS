@@ -14,7 +14,7 @@ python-multipart>=0.0.9
 pydantic>=2.0.0
 
 # ── TTS engine ───────────────────────────────────────────────────────────────
-gTTS>=2.5.1
+edge-tts>=7.0.0
 # Audio transcoding (wav/ogg output); safe to remove if mp3-only
 pydub>=0.25.1
 

@@ -4,7 +4,7 @@ pipeline.py — Orchestrates the full STT → ClinicQueue → TTS pipeline.
 Stages:
     1. STT          — transcribe audio bytes with Whisper
     2. ClinicQueue  — send transcript to ClinicQueue voice API, get response text
-    3. TTS          — synthesise reply to base64 MP3 audio
+    3. TTS          — synthesise reply to MP3 audio
 """
 
 import logging
@@ -12,8 +12,7 @@ import time
 import os
 import threading
 import httpx
-from asyncio import get_event_loop, CancelledError
-from functools import partial
+from asyncio import CancelledError
 
 from fastapi import HTTPException
 
@@ -70,8 +69,8 @@ async def run_pipeline(session_id: str, audio_bytes: bytes) -> ProcessResponse:
                 session_id=session_id,
                 transcript=transcript,
                 response_text="Wait",
-                audio_base64="",
-                audio_format="wav",
+                audio_bytes=b"",
+                audio_format="mp3",
                 latency_ms=LatencyBreakdown(
                     stt=int(t_stt),
                     db_fetch=0,
@@ -90,8 +89,8 @@ async def run_pipeline(session_id: str, audio_bytes: bytes) -> ProcessResponse:
                 session_id=session_id,
                 transcript="",
                 response_text="",
-                audio_base64="",
-                audio_format="wav",
+                audio_bytes=b"",
+                audio_format="mp3",
                 latency_ms=LatencyBreakdown(
                     stt=int(t_stt),
                     db_fetch=0,
@@ -127,8 +126,8 @@ async def run_pipeline(session_id: str, audio_bytes: bytes) -> ProcessResponse:
                 session_id=session_id,
                 transcript=transcript,
                 response_text="",
-                audio_base64="",
-                audio_format="wav",
+                audio_bytes=b"",
+                audio_format="mp3",
                 latency_ms=LatencyBreakdown(
                     stt=int(t_stt),
                     db_fetch=0,
@@ -142,11 +141,7 @@ async def run_pipeline(session_id: str, audio_bytes: bytes) -> ProcessResponse:
         # ------------------------------------------------------------------ TTS
         t0 = time.perf_counter()
         try:
-            loop = get_event_loop()
-            audio_base64, _duration = await loop.run_in_executor(
-                None,
-                partial(tts_util.synthesise_text, response_text),
-            )
+            audio_bytes, _duration = await tts_util.synthesise_text(response_text)
         except Exception as exc:
             logger.exception("TTS stage failed")
             raise HTTPException(
@@ -163,8 +158,8 @@ async def run_pipeline(session_id: str, audio_bytes: bytes) -> ProcessResponse:
             session_id=session_id,
             transcript=transcript,
             response_text=response_text,
-            audio_base64=audio_base64,
-            audio_format="wav",
+            audio_bytes=audio_bytes,
+            audio_format="mp3",
             latency_ms=LatencyBreakdown(
                 stt=int(t_stt),
                 db_fetch=0,       # no longer used
@@ -262,3 +257,4 @@ async def _call_clinicqueue(
         return response_text, intent, booking_completed
     except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout, CancelledError):
         return "", "Timeout", False
+
