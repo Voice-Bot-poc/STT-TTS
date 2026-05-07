@@ -33,6 +33,8 @@ import threading
 import wave
 from functools import partial
 
+import noisereduce as nr
+import numpy as np
 import webrtcvad
 import whisper  # openai-whisper
 
@@ -45,7 +47,8 @@ logger = logging.getLogger(__name__)
 _MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
 _NO_SPEECH_THRESHOLD = float(os.getenv("WHISPER_NO_SPEECH_THRESHOLD", "0.75"))
 _MIN_AUDIO_BYTES = int(os.getenv("WHISPER_MIN_AUDIO_BYTES", "2000"))
-_FAST_NO_SPEECH_SKIP_THRESHOLD = float(os.getenv("WHISPER_FAST_NO_SPEECH_SKIP_THRESHOLD", "0.60"))
+_FAST_NO_SPEECH_SKIP_THRESHOLD = float(os.getenv("WHISPER_FAST_NO_SPEECH_SKIP_THRESHOLD", "0.85"))
+_VAD_SPEECH_RATIO_THRESHOLD = float(os.getenv("WHISPER_VAD_SPEECH_RATIO", "0.20"))
 _HALLUCINATION_PHRASES = (
     "thank you for watching",
     "subscribe",
@@ -61,6 +64,16 @@ _whisper_model = whisper.load_model(_MODEL_NAME, device=_device)
 logger.info("Whisper model '%s' loaded.", _MODEL_NAME)
 _WHISPER_MODEL_LOCK = threading.Lock()
 _STT_QUEUE_LOCK = asyncio.Lock()
+
+
+def _denoise_audio(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
+    try:
+        audio_np = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+        reduced = nr.reduce_noise(y=audio_np, sr=sample_rate, prop_decrease=0.8)
+        return reduced.astype(np.int16).tobytes()
+    except Exception as exc:
+        logger.warning("Noise reduction failed, using original: %s", exc)
+        return pcm_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +93,25 @@ def _transcribe_sync(audio_bytes: bytes) -> str:
         # Skip chunks that are too short for stable decode.
         if len(audio_bytes) < _MIN_AUDIO_BYTES:
             return ""
+
+        # Pre-clean noisy PCM before Whisper decode. If parsing fails, keep original audio.
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+                rate = wf.getframerate()
+                pcm = wf.readframes(wf.getnframes())
+
+            clean_pcm = _denoise_audio(pcm, rate)
+
+            clean_wav_buffer = io.BytesIO()
+            with wave.open(clean_wav_buffer, "wb") as wout:
+                wout.setnchannels(1)
+                wout.setsampwidth(2)
+                wout.setframerate(rate)
+                wout.writeframes(clean_pcm)
+
+            audio_bytes = clean_wav_buffer.getvalue()
+        except (wave.Error, EOFError, ValueError) as exc:
+            logger.warning("WAV denoise prepass skipped; using original bytes: %s", exc)
 
         # NamedTemporaryFile with delete=False is required on Windows because
         # Whisper opens the file by path; a file opened by Python cannot be
@@ -101,6 +133,8 @@ def _transcribe_sync(audio_bytes: bytes) -> str:
                     language="en",
                     condition_on_previous_text=False,
                     initial_prompt=(
+                        "Clinic appointment booking call. Caller speaking from a noisy place. "
+                        "Ignore background noise. Focus on the caller's voice only. "
                         "Indian names: Raj, Ravi, Priya, Pooja, Amit, Rohit, Neha, Anjali, "
                         "Kavita, Ramesh, Suresh, Kuldeep. "
                         "Surnames: Sharma, Patel, Gupta, Singh, Verma, Joshi, Shah, Mehta, "
@@ -208,7 +242,7 @@ def _has_voice_webrtcvad(audio_bytes: bytes) -> bool:
         if rate not in (8000, 16000, 32000, 48000):
             return False
 
-        vad = webrtcvad.Vad(2)
+        vad = webrtcvad.Vad(3)
         frame_duration_ms = 20
         frame_bytes = int(rate * (frame_duration_ms / 1000.0) * sampwidth)
         if frame_bytes <= 0 or len(pcm) < frame_bytes:
@@ -225,7 +259,7 @@ def _has_voice_webrtcvad(audio_bytes: bytes) -> bool:
         if total_frames == 0:
             return False
 
-        return (speech_frames / total_frames) >= 0.10
+        return (speech_frames / total_frames) >= _VAD_SPEECH_RATIO_THRESHOLD
     except (wave.Error, EOFError, ValueError):
         return False
 

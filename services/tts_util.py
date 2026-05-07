@@ -16,6 +16,7 @@ import io
 import logging
 
 from pydub import AudioSegment
+from pydub.effects import speedup
 
 from services.tts_service import _synthesise_gtts, _estimate_duration
 
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Pipeline outputs WAV so .NET can forward deterministic PCM frames.
 _PIPELINE_FORMAT = "mp3"
 _PIPELINE_SLOW = False  # normal speech speed
+_PIPELINE_PLAYBACK_SPEED = 1.3
 _TARGET_SAMPLE_RATE = 48000
 _TARGET_CHANNELS = 1
 _TARGET_SAMPLE_WIDTH = 2
@@ -54,12 +56,20 @@ def synthesise_text(text: str) -> tuple[str, float]:
         .set_sample_width(_TARGET_SAMPLE_WIDTH)
     )
 
+    if _PIPELINE_PLAYBACK_SPEED > 1.0:
+        audio_segment = speedup(
+            audio_segment,
+            playback_speed=_PIPELINE_PLAYBACK_SPEED,
+            chunk_size=50,
+            crossfade=10,
+        )
+
     wav_buffer = io.BytesIO()
     audio_segment.export(wav_buffer, format="wav")
     wav_bytes = wav_buffer.getvalue()
 
     audio_b64 = base64.b64encode(wav_bytes).decode("utf-8")
-    duration = _estimate_duration(text, slow=_PIPELINE_SLOW)
+    duration = round(audio_segment.duration_seconds, 2)
 
     logger.info(
         "TTS (pipeline): done - %d bytes WAV @ %dHz/%dch/%d-bit, ~%.1fs",

@@ -23,6 +23,7 @@ openai-whisper>=20231117
 # Whisper dependencies (usually auto-installed; listed for clarity)
 torch>=2.0.0
 numpy>=1.24.0
+noisereduce>=3.0.0
 ffmpeg-python>=0.2.0   # Python bindings; also install ffmpeg binary on your OS
 
 # ── LLM — Anthropic Claude ───────────────────────────────────────────────────
@@ -42,3 +43,13 @@ httpx>=0.27.0
 
 # ── Transcript language filtering ─────────────────────────────────────────────
 langdetect>=1.0.9
+
+# ------------------
+# Production STT helpers
+# ------------------
+faster-whisper>=0.8.0
+webrtcvad>=2.0.10
+soundfile>=0.12.1
+noisereduce>=2.0.1
+librosa>=0.10.0
+torchaudio>=2.0.2

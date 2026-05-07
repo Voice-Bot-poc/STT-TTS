@@ -199,6 +199,10 @@ async def process_audio(
         min_length=1,
         description="Unique session/conversation identifier for history lookup",
     ),
+    phone_number: str = Form(
+        default="",
+        description="Phone number from WhatsApp webhook",
+    ),
 ):
     """
     Full VoiceBot pipeline in one call:
@@ -216,13 +220,19 @@ async def process_audio(
     **Multipart form fields:**
     - `audio_file` — the audio file
     - `session_id` — string identifier for the conversation session
+    - `phone_number` — phone number from WhatsApp webhook (optional)
     """
     audio_bytes = await audio_file.read()
-    return await run_pipeline(session_id=session_id, audio_bytes=audio_bytes)
+    return await run_pipeline(
+        session_id=session_id,
+        audio_bytes=audio_bytes,
+        phone_number=phone_number,
+    )
 
 class ChatRequest(BaseModel):
     text: str
     session_id: str
+    phone_number: str = ""
 
 
 @app.post("/chat")
@@ -230,6 +240,7 @@ async def chat(req: ChatRequest):
     return await run_chat_pipeline(
         session_id=req.session_id,
         text=req.text,
+        phone_number=req.phone_number,
     )
 
 # ---------------------------------------------------------------------------
