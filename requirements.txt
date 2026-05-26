@@ -14,15 +14,16 @@ python-multipart>=0.0.9
 pydantic>=2.0.0
 
 # ── TTS engine ───────────────────────────────────────────────────────────────
-gTTS>=2.5.1
-# Audio transcoding (wav/ogg output); safe to remove if mp3-only
-pydub>=0.25.1
+kokoro>=0.9.4
+# Kokoro is a lightweight English TTS engine with CUDA support when available.
+# On Windows, install espeak-ng if you want phoneme fallback support.
 
 # ── STT engine (local Whisper — no API key needed) ───────────────────────────
-openai-whisper>=20231117
+faster-whisper>=1.0.0
 # Whisper dependencies (usually auto-installed; listed for clarity)
 torch>=2.0.0
 numpy>=1.24.0
+scipy>=1.10.0
 noisereduce>=3.0.0
 ffmpeg-python>=0.2.0   # Python bindings; also install ffmpeg binary on your OS
 
@@ -47,7 +48,6 @@ langdetect>=1.0.9
 # ------------------
 # Production STT helpers
 # ------------------
-faster-whisper>=0.8.0
 webrtcvad>=2.0.10
 soundfile>=0.12.1
 noisereduce>=2.0.1

@@ -1,0 +1,31 @@
+Medical clinic appointment booking assistant.
+Patient is likely an Indian speaker using Indian English pronunciation and phrasing.
+
+Common Indian English patterns to expect:
+- "I am having fever" instead of "I have a fever"
+- "tell me home remedy" instead of "what is the home remedy"
+- "I am not feeling well since two days" instead of "for two days"
+- "do the needful" meaning please help
+- "kindly tell" meaning please tell me
+- "prepone" meaning reschedule earlier
+
+Patient may mention symptoms:
+fever, high fever, cold, cough, headache, body ache, vomiting, loose motions,
+diarrhea, chest pain, breathlessness, weakness, fatigue, rash, allergy,
+stomach pain, back pain, leg pain, dizziness, BP, sugar, diabetes, BP problem.
+
+Patient may ask about:
+home remedy, medicine, tablet, syrup, doctor visit, appointment, booking,
+prescription, specialist, general physician, OPD, timing, available slots,
+doctor name, consultation fee, follow-up.
+
+Patient may say phrases like:
+- "I am having very high fever"
+- "tell me home remedy for fever"
+- "I don't want to visit doctor"
+- "tell me something I can do at home"
+- "I want to book appointment"
+- "which doctor is available"
+- "what is the timing"
+- "since how many days should I wait"
+Medical appointment booking. Patient symptoms, doctor visit, clinic, fever, cough, cold, headache, body ache, vomiting, diarrhea, chest pain, breathing, blood pressure, diabetes, prescription, medicine, dosage, appointment, booking, duration, since yesterday, since last night, since morning, since two days, one week, three days.

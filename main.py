@@ -9,16 +9,18 @@ from functools import partial
 import base64
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from services import db as _db  # alias to avoid shadowing any built-in
 from models.models import ProcessResponse
-from services.pipeline import run_pipeline
+from services.pipeline import close_http_clients, run_pipeline
 from services.tts_service import get_tts_service, TTSRequest, AudioFormat, VoiceID
+from services.streaming_tts import get_streaming_tts_service, StreamingTtsUnavailable, TARGET_SAMPLE_RATE
 from fastapi.responses import RedirectResponse
 
 from services.pipeline import run_chat_pipeline
+from services.runtime_state import mark_tts_end, mark_tts_start
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -35,7 +37,8 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
     """Startup / shutdown handler — dispose MySQL connections cleanly on exit."""
-    yield  # startup: nothing to do (lazy init in db.py)
+    yield
+    await close_http_clients()
     await _db.dispose_engine()
 
 
@@ -50,6 +53,7 @@ app = FastAPI(
 )
 
 tts_service = get_tts_service()
+streaming_tts_service = get_streaming_tts_service()
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +75,13 @@ class TTSResponseBody(BaseModel):
 
 class SynthesiseRequestBody(BaseModel):
     text: str = Field(..., min_length=1, description="Text to synthesise for call greeting")
+
+
+class StreamingTTSRequestBody(BaseModel):
+    text: str = Field(..., min_length=1, description="Text to stream as PCM16 audio")
+    chunk_ms: int = Field(40, ge=20, le=200, description="PCM chunk cadence in milliseconds")
+    session_id: str = Field("default", description="Conversation session id for TTS echo suppression")
+    speed: Optional[float] = Field(None, ge=0.5, le=1.3, description="Optional Kokoro speech speed override")
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +190,46 @@ def text_to_speech_raw(body: TTSRequestBody):
     )
 
 
+@app.post(
+    "/tts/pcm-stream",
+    tags=["TTS"],
+    summary="Text to streaming PCM16 mono 24kHz for realtime RTP playback",
+)
+async def text_to_pcm_stream(body: StreamingTTSRequestBody):
+    async def generate():
+        mark_tts_start(body.session_id)
+        try:
+            async for chunk in streaming_tts_service.stream_pcm(
+                body.text,
+                body.chunk_ms,
+                body.session_id,
+                speed=body.speed,
+            ):
+                yield chunk
+        except StreamingTtsUnavailable as exc:
+            logger.exception("Streaming TTS unavailable")
+            raise HTTPException(status_code=503, detail=str(exc))
+        except asyncio.CancelledError:
+            logger.info("[TTS] cancelled by client session=%s", body.session_id)
+            streaming_tts_service.cancel_session(body.session_id)
+            raise
+        except Exception as exc:
+            logger.exception("Streaming TTS failed")
+            raise HTTPException(status_code=500, detail=f"Streaming synthesis error: {exc}")
+        finally:
+            mark_tts_end(body.session_id)
+
+    return StreamingResponse(
+        generate(),
+        media_type=f"audio/L16;rate={TARGET_SAMPLE_RATE};channels=1",
+        headers={
+            "X-Audio-Format": "pcm_s16le",
+            "X-Sample-Rate": str(TARGET_SAMPLE_RATE),
+            "X-Channels": "1",
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # POST /process — Full pipeline: STT → LLM → MySQL → TTS
 # ---------------------------------------------------------------------------
@@ -200,18 +251,20 @@ async def process_audio(
         description="Unique session/conversation identifier for history lookup",
     ),
     phone_number: str = Form(
-        default="",
-        description="Phone number from WhatsApp webhook",
+        ...,
+        description="Real caller phone number from WhatsApp webhook",
+    ),
+    synthesize_tts: bool = Form(
+        True,
+        description="When false, return transcript and ClinicQueue text without blocking TTS synthesis.",
     ),
 ):
     """
     Full VoiceBot pipeline in one call:
 
     1. **STT** — transcribe the uploaded audio with Whisper (local)
-    2. **DB fetch** — load last 5 conversation turns for `session_id`
-    3. **LLM** — call Anthropic Claude with history + transcript
-    4. **DB write** — persist the new exchange
-    5. **TTS** — synthesise the LLM reply to MP3 audio
+    2. **ClinicQueue** — call `/api/voice/chat` with transcript, session_id, and real phone_number
+    3. **TTS** — synthesise the ClinicQueue reply to audio
 
     Returns the transcript, LLM response, base64 audio, and per-stage latency.
 
@@ -220,23 +273,41 @@ async def process_audio(
     **Multipart form fields:**
     - `audio_file` — the audio file
     - `session_id` — string identifier for the conversation session
-    - `phone_number` — phone number from WhatsApp webhook (optional)
+    - `phone_number` — real caller phone number from WhatsApp webhook
     """
     audio_bytes = await audio_file.read()
+    logger.info(
+        "[VoiceInput] /process received audio bytes=%d filename=%s content_type=%s session_id=%r phone_number=%r synthesize_tts=%s",
+        len(audio_bytes),
+        audio_file.filename,
+        audio_file.content_type,
+        session_id,
+        phone_number,
+        synthesize_tts,
+    )
     return await run_pipeline(
         session_id=session_id,
         audio_bytes=audio_bytes,
         phone_number=phone_number,
-    )
+        synthesize_tts=synthesize_tts,
+)
+
+
 
 class ChatRequest(BaseModel):
     text: str
     session_id: str
-    phone_number: str = ""
+    phone_number: str
 
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
+    logger.info(
+        "[VoiceInput] /chat received session_id=%r phone_number=%r text_preview=%r",
+        req.session_id,
+        req.phone_number,
+        req.text[:80],
+    )
     return await run_chat_pipeline(
         session_id=req.session_id,
         text=req.text,
