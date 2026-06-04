@@ -1,47 +1,59 @@
 from dotenv import load_dotenv
-
+ 
 import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 from functools import partial
-
+ 
 import base64
-
+ 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
-
+ 
 from services import db as _db  # alias to avoid shadowing any built-in
 from models.models import ProcessResponse
 from services.pipeline import close_http_clients, run_pipeline
 from services.tts_service import get_tts_service, TTSRequest, AudioFormat, VoiceID
 from services.streaming_tts import get_streaming_tts_service, StreamingTtsUnavailable, TARGET_SAMPLE_RATE
 from fastapi.responses import RedirectResponse
-
+ 
 from services.pipeline import run_chat_pipeline
 from services.runtime_state import mark_tts_end, mark_tts_start
-
+ 
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
-
+ 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
-
+ 
 load_dotenv()
-
+ 
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
     """Startup / shutdown handler — dispose MySQL connections cleanly on exit."""
+ 
+    # ── Fix 2: Pre-load Kokoro pipeline at startup so first caller pays zero load cost ──
+    try:
+        import asyncio as _asyncio
+        from services.streaming_tts import get_streaming_tts_service
+        loop = _asyncio.get_event_loop()
+        await loop.run_in_executor(None, get_streaming_tts_service().validate_startup)
+        logger.info("[STARTUP] ✅ Kokoro pipeline warmed up")
+    except Exception as e:
+        logger.warning("[STARTUP] Kokoro warm-up failed (non-fatal): %s", e)
+ 
     yield
+ 
     await close_http_clients()
     await _db.dispose_engine()
-
-
+ 
+ 
 app = FastAPI(
     title="VoiceBot STT-TTS Microservice",
     description=(
@@ -51,53 +63,53 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
-
+ 
 tts_service = get_tts_service()
 streaming_tts_service = get_streaming_tts_service()
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
 # ---------------------------------------------------------------------------
-
+ 
 class TTSRequestBody(BaseModel):
     text: str = Field(..., min_length=1, description="Text to synthesise")
     voice: Optional[VoiceID] = Field("default", description="'default' or 'slow'")
     format: Optional[AudioFormat] = Field("mp3", description="Output format: mp3 | wav | ogg")
-
-
+ 
+ 
 class TTSResponseBody(BaseModel):
     audio_base64: str = Field(..., description="Base64-encoded audio bytes")
     duration: float = Field(..., description="Estimated audio duration in seconds")
     format: str = Field(..., description="Actual format of the returned audio")
     char_count: int = Field(..., description="Number of characters synthesised")
-
-
+ 
+ 
 class SynthesiseRequestBody(BaseModel):
     text: str = Field(..., min_length=1, description="Text to synthesise for call greeting")
-
-
+ 
+ 
 class StreamingTTSRequestBody(BaseModel):
     text: str = Field(..., min_length=1, description="Text to stream as PCM16 audio")
     chunk_ms: int = Field(40, ge=20, le=200, description="PCM chunk cadence in milliseconds")
     session_id: str = Field("default", description="Conversation session id for TTS echo suppression")
     speed: Optional[float] = Field(None, ge=0.5, le=1.3, description="Optional Kokoro speech speed override")
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-
+ 
 @app.get("/health", tags=["Meta"])
 def health_check():
     """Quick liveness probe."""
     return {"status": "ok"}
-
+ 
 @app.get("/", tags=["Meta"])
 def root():
     """Redirect root to health check."""
     return RedirectResponse(url="/health")
-
+ 
 @app.post(
     "/tts",
     response_model=TTSResponseBody,
@@ -107,10 +119,10 @@ def root():
 def text_to_speech(body: TTSRequestBody):
     """
     Convert text to audio.
-
+ 
     Returns a JSON body with base64-encoded audio and metadata.
     Decode `audio_base64` on the client side to get raw audio bytes.
-
+ 
     **Example**
     ```
     POST /tts
@@ -130,15 +142,15 @@ def text_to_speech(body: TTSRequestBody):
     except Exception as e:
         logger.exception("TTS synthesis failed")
         raise HTTPException(status_code=500, detail=f"Synthesis error: {str(e)}")
-
+ 
     return TTSResponseBody(
         audio_base64=result.audio_base64,
         duration=result.duration,
         format=result.format,
         char_count=result.char_count,
     )
-
-
+ 
+ 
 @app.post("/synthesise", tags=["TTS"], summary="Text to base64 wav for call playback")
 async def synthesise(body: SynthesiseRequestBody):
     loop = asyncio.get_event_loop()
@@ -147,8 +159,8 @@ async def synthesise(body: SynthesiseRequestBody):
         partial(tts_service.synthesise, TTSRequest(text=body.text, voice="default", format="wav")),
     )
     return {"audio_base64": result.audio_base64}
-
-
+ 
+ 
 @app.post(
     "/tts/stream",
     tags=["TTS"],
@@ -159,7 +171,7 @@ def text_to_speech_raw(body: TTSRequestBody):
     """
     Same as `/tts` but returns the raw audio file directly
     (Content-Type: audio/mpeg | audio/wav | audio/ogg).
-
+ 
     Useful when you want to pipe the response straight into a player
     instead of parsing JSON.
     """
@@ -176,10 +188,10 @@ def text_to_speech_raw(body: TTSRequestBody):
     except Exception as e:
         logger.exception("TTS synthesis failed")
         raise HTTPException(status_code=500, detail=f"Synthesis error: {str(e)}")
-
+ 
     mime_map = {"mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
     audio_bytes = base64.b64decode(result.audio_base64)
-
+ 
     return Response(
         content=audio_bytes,
         media_type=mime_map.get(result.format, "audio/mpeg"),
@@ -188,8 +200,8 @@ def text_to_speech_raw(body: TTSRequestBody):
             "X-Char-Count": str(result.char_count),
         },
     )
-
-
+ 
+ 
 @app.post(
     "/tts/pcm-stream",
     tags=["TTS"],
@@ -218,7 +230,7 @@ async def text_to_pcm_stream(body: StreamingTTSRequestBody):
             raise HTTPException(status_code=500, detail=f"Streaming synthesis error: {exc}")
         finally:
             mark_tts_end(body.session_id)
-
+ 
     return StreamingResponse(
         generate(),
         media_type=f"audio/L16;rate={TARGET_SAMPLE_RATE};channels=1",
@@ -228,12 +240,12 @@ async def text_to_pcm_stream(body: StreamingTTSRequestBody):
             "X-Channels": "1",
         },
     )
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # POST /process — Full pipeline: STT → LLM → MySQL → TTS
 # ---------------------------------------------------------------------------
-
+ 
 @app.post(
     "/process",
     response_model=ProcessResponse,
@@ -261,15 +273,15 @@ async def process_audio(
 ):
     """
     Full VoiceBot pipeline in one call:
-
+ 
     1. **STT** — transcribe the uploaded audio with Whisper (local)
     2. **ClinicQueue** — call `/api/voice/chat` with transcript, session_id, and real phone_number
     3. **TTS** — synthesise the ClinicQueue reply to audio
-
+ 
     Returns the transcript, LLM response, base64 audio, and per-stage latency.
-
+ 
     On failure in any stage, returns `{ "stage": "...", "detail": "..." }` with HTTP 500.
-
+ 
     **Multipart form fields:**
     - `audio_file` — the audio file
     - `session_id` — string identifier for the conversation session
@@ -291,15 +303,15 @@ async def process_audio(
         phone_number=phone_number,
         synthesize_tts=synthesize_tts,
 )
-
-
-
+ 
+ 
+ 
 class ChatRequest(BaseModel):
     text: str
     session_id: str
     phone_number: str
-
-
+ 
+ 
 @app.post("/chat")
 async def chat(req: ChatRequest):
     logger.info(
@@ -313,11 +325,13 @@ async def chat(req: ChatRequest):
         text=req.text,
         phone_number=req.phone_number,
     )
-
+ 
 # ---------------------------------------------------------------------------
 # Entry point  (python main.py)
 # ---------------------------------------------------------------------------
-
+ 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+ 
+ 
