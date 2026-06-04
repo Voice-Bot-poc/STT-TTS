@@ -37,7 +37,19 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
     """Startup / shutdown handler — dispose MySQL connections cleanly on exit."""
+
+    # ── Fix 2: Pre-load Kokoro pipeline at startup so first caller pays zero load cost ──
+    try:
+        import asyncio as _asyncio
+        from services.streaming_tts import get_streaming_tts_service
+        loop = _asyncio.get_event_loop()
+        await loop.run_in_executor(None, get_streaming_tts_service().validate_startup)
+        logger.info("[STARTUP] ✅ Kokoro pipeline warmed up")
+    except Exception as e:
+        logger.warning("[STARTUP] Kokoro warm-up failed (non-fatal): %s", e)
+
     yield
+
     await close_http_clients()
     await _db.dispose_engine()
 

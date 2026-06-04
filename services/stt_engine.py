@@ -58,6 +58,8 @@ _INCOMPLETE_SUFFIXES = (
     " with", " to", " and", " or", " the", " a", " an",
     "my name is", "i want to", "book with", "i'd like to",
     "i would like", "can you", "i need",
+    " और", " या", " के", " का", " की", " को", " से", " में",
+    "मेरा नाम है", "मुझे चाहिए", "मैं चाहता",
 )
 
 _HALLUCINATION_PHRASES = (
@@ -87,7 +89,7 @@ class STTEngine:
     - Uses conservative decoding parameters (temperature=0.0) to reduce hallucination
     """
 
-    SILENCE_GRACE_MS: int = 1800   # ms of silence before finalising utterance (FIX 7)
+    SILENCE_GRACE_MS: int = 1000   # ms of silence before finalising utterance (FIX 7)
     MIN_SPEECH_MS: int = 900       # minimum speech before transcription attempt
     MAX_BUFFER_MS: int = 8000      # safety cap — force flush after this
 
@@ -100,7 +102,7 @@ class STTEngine:
         self.model = WhisperModel(model_size, device=self.device, compute_type=compute_type)
 
         # FIX 5 — aggressiveness 2 (was 3). Mode 3 cuts real speech on phone calls.
-        self.vad = webrtcvad.Vad(3)
+        self.vad = webrtcvad.Vad(2)
 
         self.frame_ms = 30
         self.frame_bytes = int(SAMPLE_RATE * (self.frame_ms / 1000.0) * 2)  # 16-bit PCM
@@ -138,10 +140,7 @@ class STTEngine:
         return audio
 
     def noise_reduce(self, audio_np: np.ndarray) -> np.ndarray:
-        try:
-            return nr.reduce_noise(y=audio_np, sr=SAMPLE_RATE, prop_decrease=0.8)
-        except Exception:
-            return audio_np
+        return audio_np
 
     def is_speech_frame(self, frame_bytes: bytes) -> bool:
         try:
@@ -191,6 +190,7 @@ class STTEngine:
             audio,
             beam_size=5,
             best_of=5,
+            language=None,
             word_timestamps=False,
             temperature=0.0,
             condition_on_previous_text=True,

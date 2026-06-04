@@ -53,3 +53,12 @@ soundfile>=0.12.1
 noisereduce>=2.0.1
 librosa>=0.10.0
 torchaudio>=2.0.2
+
+
+# ADD these, REMOVE kokoro
+edge-tts>=6.1.9
+pydub>=0.25.1
+
+# REMOVE or comment out:
+# kokoro
+# faster-whisper

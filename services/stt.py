@@ -30,12 +30,13 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2
 
-STT_API_URL = os.getenv("STT_API_URL", "http://10.30.1.34:9000/transcribe")
-_ENV_STT_TIMEOUT_SECONDS = float(os.getenv("STT_TIMEOUT_SECONDS", "5"))
-STT_TIMEOUT_SECONDS = max(_ENV_STT_TIMEOUT_SECONDS, 5.0)
-STT_CONNECT_TIMEOUT_SECONDS = float(os.getenv("STT_CONNECT_TIMEOUT_SECONDS", "5"))
-STT_MODEL_HINT = os.getenv("REMOTE_WHISPER_MODEL", "distil-large-v3")
-MIN_AUDIO_MS = int(os.getenv("STT_MIN_AUDIO_MS", "900"))
+# NEW — replace with these
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+STT_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+STT_TIMEOUT_SECONDS = float(os.getenv("STT_TIMEOUT_SECONDS", "10.0"))
+STT_CONNECT_TIMEOUT_SECONDS = float(os.getenv("STT_CONNECT_TIMEOUT_SECONDS", "5.0"))
+STT_MODEL_HINT = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
+MIN_AUDIO_MS = int(os.getenv("STT_MIN_AUDIO_MS", "600"))
 MIN_RMS = int(os.getenv("STT_MIN_RMS", "450"))
 VAD_RATIO_THRESHOLD = float(os.getenv("STT_VAD_RATIO_THRESHOLD", "0.55"))
 NO_SPEECH_THRESHOLD = float(os.getenv("STT_NO_SPEECH_THRESHOLD", "0.65"))
@@ -60,7 +61,7 @@ _HALLUCINATION_PHRASES = (
     "applause",
 )
 
-_SHORT_ALLOWED_TRANSCRIPTS = {"yes", "no", "bye", "hi", "hello", "ok", "okay", "confirm"}
+_SHORT_ALLOWED_TRANSCRIPTS = {"yes", "no", "bye", "hi", "hello", "ok", "okay", "confirm", "हाँ", "नहीं", "ठीक", "हेलो", "नमस्ते"}
 
 _WHITELIST_PHRASES = (
     "reschedule",
@@ -70,6 +71,12 @@ _WHITELIST_PHRASES = (
     "no",
     "okay",
     "confirm",
+    "अपॉइंटमेंट",
+    "बुक",
+    "हाँ",
+    "नहीं",
+    "ठीक है",
+    "डॉक्टर",
 )
 
 _MEDICAL_BOOKING_TERMS = (
@@ -102,6 +109,27 @@ _MEDICAL_BOOKING_TERMS = (
     "goodbye",
     "hello",
     "thank",
+    "अपॉइंटमेंट",
+    "बुकिंग",
+    "डॉक्टर",
+    "अस्पताल",
+    "दर्द",
+    "बुखार",
+    "खांसी",
+    "सिरदर्द",
+    "बदन दर्द",
+    "कल",
+    "आज",
+    "सुबह",
+    "शाम",
+    "दोपहर",
+    "नाम",
+    "नंबर",
+    "हाँ",
+    "नहीं",
+    "ठीक",
+    "मुझे",
+    "चाहिए",
 )
 
 _INCOMPLETE_SUFFIXES = (
@@ -198,6 +226,7 @@ logger.info(
 )
 
 
+# NEW
 async def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
@@ -208,8 +237,10 @@ async def _get_client() -> httpx.AsyncClient:
             write=STT_TIMEOUT_SECONDS,
         )
         limits = httpx.Limits(max_connections=32, max_keepalive_connections=8, keepalive_expiry=30.0)
+        # No default Authorization header — we pass it per-request in _remote_transcribe()
+        # so the same client can be reused safely
         _client = httpx.AsyncClient(timeout=timeout, limits=limits)
-        logger.info("Remote STT persistent AsyncClient initialized keepalive=true")
+        logger.info("Groq Whisper STT AsyncClient initialized timeout=%.1fs", STT_TIMEOUT_SECONDS)
     return _client
 
 
@@ -317,15 +348,16 @@ def _prepare_audio(audio_bytes: bytes) -> PreparedAudio:
     pcm = (audio * 32767.0).astype("<i2").tobytes()
     rms = audioop.rms(pcm, SAMPLE_WIDTH) if pcm else 0
 
-    if rms >= MIN_RMS:
-        try:
-            audio = nr.reduce_noise(y=audio, sr=SAMPLE_RATE, prop_decrease=0.45).astype(np.float32)
-            audio = np.clip(audio, -1.0, 1.0)
-            pcm = (audio * 32767.0).astype("<i2").tobytes()
-            rms = audioop.rms(pcm, SAMPLE_WIDTH) if pcm else 0
-        except Exception as exc:
-            logger.debug("STT noise reduction skipped: %s", exc)
+   # if rms >= MIN_RMS:
+   #     try:
+   #        audio = nr.reduce_noise(y=audio, sr=SAMPLE_RATE, prop_decrease=0.45).astype(np.float32)
+   #         audio = np.clip(audio, -1.0, 1.0)
+   #         pcm = (audio * 32767.0).astype("<i2").tobytes()
+   #         rms = audioop.rms(pcm, SAMPLE_WIDTH) if pcm else 0
+   #     except Exception as exc:
+   #         logger.debug("STT noise reduction skipped: %s", exc)
 
+    # Compute VAD exactly once per utterance and reuse it to reduce latency
     vad_ratio = _voice_ratio(pcm)
 
     return PreparedAudio(
@@ -336,12 +368,6 @@ def _prepare_audio(audio_bytes: bytes) -> PreparedAudio:
         vad_ratio=vad_ratio,
         audio_hash=hashlib.sha1(pcm).hexdigest(),
     )
-
-
-def _has_speech(pcm: bytes) -> bool:
-    ratio = _voice_ratio(pcm)
-    logger.info("STT VAD ratio %.2f threshold=%.2f", ratio, VAD_RATIO_THRESHOLD)
-    return ratio >= VAD_RATIO_THRESHOLD
 
 
 def _normalize_text(text: str) -> str:
@@ -443,16 +469,21 @@ def _looks_like_hallucination(text: str, prepared: PreparedAudio, state: SttSess
 
 
 def _extract_text(payload: dict[str, Any]) -> str:
-    for key in ("transcript", "full_text", "text"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
+    text = (
+        payload.get("transcribedText")
+        or payload.get("text")
+        or ""
+    ).strip()
+    if text:
+        logger.info("STT extracted original transcript=%r", text)
+        return text
 
     segments = payload.get("segments")
     if isinstance(segments, list):
-        return " ".join(str(segment.get("text", "")) for segment in segments if isinstance(segment, dict))
+        text = " ".join(str(segment.get("text", "")) for segment in segments if isinstance(segment, dict)).strip()
 
-    return ""
+    logger.info("STT extracted original transcript=%r", text)
+    return text
 
 
 def _extract_float(payload: dict[str, Any], *keys: str, default: float = 0.0) -> float:
@@ -463,31 +494,77 @@ def _extract_float(payload: dict[str, Any], *keys: str, default: float = 0.0) ->
     return default
 
 
+# NEW
 async def _remote_transcribe(prepared: PreparedAudio) -> dict:
+    """
+    Calls Groq Whisper API instead of remote Faster-Whisper server.
+    Groq returns OpenAI-compatible JSON: { "text": "...", "language": "...", ... }
+    We normalize it to match the shape the rest of stt.py already expects.
+    """
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is not set — cannot call Groq Whisper API")
+
     client = await _get_client()
+
     files = {"file": ("utterance.wav", prepared.wav_bytes, "audio/wav")}
     data = {
-        "language": "en",
-        "task": "transcribe",
-        "model": STT_MODEL_HINT,
-        "initial_prompt": _INITIAL_PROMPT,
-        "condition_on_previous_text": "false",
+        "model": STT_MODEL_HINT,        # whisper-large-v3-turbo
         "temperature": "0",
-        "vad_filter": "true",
-        "no_speech_threshold": str(NO_SPEECH_THRESHOLD),
-        "compression_ratio_threshold": "2.35",
-        "log_prob_threshold": str(LOG_PROB_THRESHOLD),
+        "response_format": "verbose_json",  # gives us language + segments
     }
 
-    response = await client.post(STT_API_URL, files=files, data=data)
+    lang = os.getenv("STT_LANGUAGE", "")
+    if lang:
+        data["language"] = lang
+
+    if _INITIAL_PROMPT:
+        data["prompt"] = _INITIAL_PROMPT
+
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+
+    response = await client.post(STT_API_URL, files=files, data=data, headers=headers)
     response.raise_for_status()
     payload = response.json()
-    logger.info("Remote STT raw response keys=%s", list(payload.keys()) if isinstance(payload, dict) else type(payload))
-    return payload if isinstance(payload, dict) else {}
+
+    logger.info(
+        "Groq Whisper raw response keys=%s text=%r",
+        list(payload.keys()) if isinstance(payload, dict) else type(payload),
+        str(payload.get("text", ""))[:80],
+    )
+
+    # Normalize Groq response → shape that _validate_remote_result() expects:
+    # { "text": "...", "language_probability": 1.0, "segments": [...] }
+    # Groq verbose_json already has "text" and "segments".
+    # We map segment fields to the camelCase/snake_case keys _validate_remote_result reads.
+    normalized_segments = []
+    for seg in payload.get("segments") or []:
+        normalized_segments.append({
+            "text":           seg.get("text", ""),
+            "no_speech_prob": seg.get("no_speech_prob", 0.0),
+            "avg_logprob":    seg.get("avg_logprob", 0.0),
+        })
+
+    return {
+        "text":                 payload.get("text", ""),
+        # Groq doesn't return language_probability — default 1.0 (it's already filtered)
+        "language_probability": 1.0,
+        "language":             payload.get("language", ""),
+        "segments":             normalized_segments,
+        # top-level confidence proxies (average across segments if present)
+        "no_speech_prob":       (
+            sum(s.get("no_speech_prob", 0.0) for s in normalized_segments) / len(normalized_segments)
+            if normalized_segments else 0.0
+        ),
+        "avg_logprob":          (
+            sum(s.get("avg_logprob", 0.0) for s in normalized_segments) / len(normalized_segments)
+            if normalized_segments else 0.0
+        ),
+    }
 
 
 def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, state: SttSessionState) -> dict:
     text = _normalize_text(_extract_text(payload))
+    logger.info("Extracted transcript=%r", text)
     no_speech_prob = _extract_float(payload, "no_speech_prob", "noSpeechProb", default=0.0)
     avg_logprob = _extract_float(payload, "avg_logprob", "avgLogprob", default=0.0)
     lang_prob = _extract_float(payload, "language_probability", "languageProbability", default=1.0)
@@ -495,6 +572,7 @@ def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, st
     meaningful_words = _meaningful_word_count(text)
     vad = prepared.vad_ratio
     duration_ms = prepared.duration_ms
+    forced_lang = os.getenv("STT_LANGUAGE", "")
 
     if _segment_confidence_is_low(payload):
         logger.info(
@@ -526,7 +604,7 @@ def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, st
             avg_logprob,
         )
         text = ""
-    elif lang_prob < LANG_CONF_THRESHOLD:
+    elif lang_prob < LANG_CONF_THRESHOLD and forced_lang == "en":
         logger.info(
             "STT rejected | rms=%d vad=%.2f duration_ms=%d confidence=%.3f language_probability=%.3f reason=low_language_confidence",
             prepared.rms,
