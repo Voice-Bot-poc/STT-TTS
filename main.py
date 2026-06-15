@@ -7,11 +7,14 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from functools import partial
  
+ 
 import base64
+ 
  
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
+ 
  
 from services import db as _db  # alias to avoid shadowing any built-in
 from models.models import ProcessResponse
@@ -19,6 +22,7 @@ from services.pipeline import close_http_clients, run_pipeline
 from services.tts_service import get_tts_service, TTSRequest, AudioFormat, VoiceID
 from services.streaming_tts import get_streaming_tts_service, StreamingTtsUnavailable, TARGET_SAMPLE_RATE
 from fastapi.responses import RedirectResponse
+ 
  
 from services.pipeline import run_chat_pipeline
 from services.runtime_state import mark_tts_end, mark_tts_start
@@ -28,6 +32,7 @@ from services.greeting_service import GreetingService
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
+ 
  
 logging.basicConfig(
     level=logging.INFO,
@@ -104,8 +109,11 @@ async def lifespan(app_: FastAPI):
  
     yield
  
+ 
     await close_http_clients()
     await _db.dispose_engine()
+ 
+ 
  
  
 app = FastAPI(
@@ -118,6 +126,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
  
+ 
 tts_service = get_tts_service()
 streaming_tts_service = get_streaming_tts_service()
 greeting_service = GreetingService()
@@ -127,10 +136,13 @@ greeting_service = GreetingService()
 # Request / Response schemas
 # ---------------------------------------------------------------------------
  
+ 
 class TTSRequestBody(BaseModel):
     text: str = Field(..., min_length=1, description="Text to synthesise")
     voice: Optional[VoiceID] = Field("default", description="'default' or 'slow'")
     format: Optional[AudioFormat] = Field("mp3", description="Output format: mp3 | wav | ogg")
+ 
+ 
  
  
 class TTSResponseBody(BaseModel):
@@ -140,8 +152,12 @@ class TTSResponseBody(BaseModel):
     char_count: int = Field(..., description="Number of characters synthesised")
  
  
+ 
+ 
 class SynthesiseRequestBody(BaseModel):
     text: str = Field(..., min_length=1, description="Text to synthesise for call greeting")
+ 
+ 
  
  
 class StreamingTTSRequestBody(BaseModel):
@@ -155,15 +171,18 @@ class StreamingTTSRequestBody(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
  
+ 
 @app.get("/health", tags=["Meta"])
 def health_check():
     """Quick liveness probe."""
     return {"status": "ok"}
  
+ 
 @app.get("/", tags=["Meta"])
 def root():
     """Redirect root to health check."""
     return RedirectResponse(url="/health")
+ 
  
 @app.post(
     "/tts",
@@ -174,6 +193,7 @@ def root():
 def text_to_speech(body: TTSRequestBody):
     """
     Convert text to audio.
+ 
  
     Returns a JSON body with base64-encoded audio and metadata.
     Decode `audio_base64` on the client side to get raw audio bytes.
@@ -192,12 +212,15 @@ def text_to_speech(body: TTSRequestBody):
         logger.exception("TTS synthesis failed")
         raise HTTPException(status_code=500, detail=f"Synthesis error: {str(e)}")
  
+ 
     return TTSResponseBody(
         audio_base64=result.audio_base64,
         duration=result.duration,
         format=result.format,
         char_count=result.char_count,
     )
+ 
+ 
  
  
 @app.post("/synthesise", tags=["TTS"], summary="Text to base64 wav for call playback")
@@ -208,6 +231,8 @@ async def synthesise(body: SynthesiseRequestBody):
         partial(tts_service.synthesise, TTSRequest(text=body.text, voice="default", format="wav")),
     )
     return {"audio_base64": result.audio_base64}
+ 
+ 
  
  
 @app.post(
@@ -235,8 +260,10 @@ def text_to_speech_raw(body: TTSRequestBody):
         logger.exception("TTS synthesis failed")
         raise HTTPException(status_code=500, detail=f"Synthesis error: {str(e)}")
  
+ 
     mime_map = {"mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
     audio_bytes = base64.b64decode(result.audio_base64)
+ 
  
     return Response(
         content=audio_bytes,
@@ -295,6 +322,7 @@ async def text_to_pcm_stream(body: StreamingTTSRequestBody):
             raise HTTPException(status_code=500, detail=f"Streaming synthesis error: {exc}")
         finally:
             mark_tts_end(body.session_id)
+ 
  
     return StreamingResponse(
         generate(),
@@ -405,6 +433,7 @@ async def get_filler(body: FillerRequest):
 # POST /process — Full pipeline: STT → LLM → MySQL → TTS
 # ---------------------------------------------------------------------------
  
+ 
 @app.post(
     "/process",
     response_model=ProcessResponse,
@@ -455,6 +484,8 @@ class ChatRequest(BaseModel):
     phone_number: str
  
  
+ 
+ 
 @app.post("/chat")
 async def chat(req: ChatRequest):
     logger.info(
@@ -473,6 +504,7 @@ async def chat(req: ChatRequest):
 # ---------------------------------------------------------------------------
 # Entry point  (python main.py)
 # ---------------------------------------------------------------------------
+ 
  
 if __name__ == "__main__":
     import uvicorn

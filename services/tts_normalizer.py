@@ -33,6 +33,7 @@ _HINDI_ONES = [
     "चौवन", "पचपन", "छप्पन", "सत्तावन", "अट्ठावन", "उनसठ", "साठ",
 ]
 
+<<<<<<< HEAD
 _HINDI_TENS = [
     "", "", "बीस", "तीस", "चालीस", "पचास", "साठ", "सत्तर", "अस्सी", "नब्बे",
 ]
@@ -54,6 +55,8 @@ _HINDI_ORDINALS = {
 }
 
 
+=======
+>>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
 def _number_to_words(n: int) -> str:
     if n == 0:
         return "zero"
@@ -88,6 +91,7 @@ def _number_to_words(n: int) -> str:
     return " ".join(parts)
 
 
+<<<<<<< HEAD
 def _number_to_hindi_words(n: int) -> str:
     """Convert integer to Hindi spoken words."""
     if n == 0:
@@ -121,6 +125,8 @@ def _number_to_hindi_words(n: int) -> str:
     return f"{lakhs} लाख {_number_to_hindi_words(rest)}"
 
 
+=======
+>>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
 def _number_to_ordinal_words(n: int) -> str:
     if n in _ORDINAL_WORDS:
         return _ORDINAL_WORDS[n]
@@ -234,6 +240,7 @@ def normalize_for_tts_hindi(text: str) -> str:
     if not text:
         return ""
 
+<<<<<<< HEAD
     # Times: HH:MM or HH.MM with optional AM/PM or बजे
     def replace_time_hindi(m: re.Match) -> str:
         hour = int(m.group(1))
@@ -303,6 +310,8 @@ def normalize_for_tts(text: str, language: str = "en") -> str:
     if language == "hi" or _is_hindi_text(text):
         return normalize_for_tts_hindi(text)
 
+=======
+>>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
     # --- DATES: DD/MM/YYYY or DD-MM-YYYY (day first, then month) ---
     def replace_date_slash(m: re.Match) -> str:
         day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -413,7 +422,10 @@ if __name__ == "__main__":
                                                                   "Available slots are today at ten am or tomorrow at nine am"),
         ("Earliest slot is tomorrow at 9:00 AM",                  "Earliest slot is tomorrow at nine am"),
         ("Your appointment is on 2026-05-28 at 15:00",            "Your appointment is on May twenty eighth twenty six at three pm"),
+<<<<<<< HEAD
         ("तुम्हारी अपॉइंटमेंट 12:00 बजे बुक हो गई है", "तुम्हारी अपॉइंटमेंट बारह बजे बुक हो गई है"),
+=======
+>>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
     ]
     print(f"{'Input':<55} {'Expected':<45} {'Got':<45} Result")
     print("-" * 160)

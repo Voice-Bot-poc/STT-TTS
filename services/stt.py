@@ -32,12 +32,20 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2
 
+<<<<<<< HEAD
 # NEW — replace with these
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 STT_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 STT_TIMEOUT_SECONDS = float(os.getenv("STT_TIMEOUT_SECONDS", "10.0"))
 STT_CONNECT_TIMEOUT_SECONDS = float(os.getenv("STT_CONNECT_TIMEOUT_SECONDS", "5.0"))
 STT_MODEL_HINT = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
+=======
+STT_API_URL = os.getenv("STT_API_URL", "http://10.30.1.34:8000/transcribe")
+_ENV_STT_TIMEOUT_SECONDS = float(os.getenv("STT_TIMEOUT_SECONDS", "5"))
+STT_TIMEOUT_SECONDS = max(_ENV_STT_TIMEOUT_SECONDS, 5.0)
+STT_CONNECT_TIMEOUT_SECONDS = float(os.getenv("STT_CONNECT_TIMEOUT_SECONDS", "5"))
+STT_MODEL_HINT = os.getenv("REMOTE_WHISPER_MODEL", "distil-large-v3")
+>>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
 MIN_AUDIO_MS = int(os.getenv("STT_MIN_AUDIO_MS", "600"))
 MIN_RMS = int(os.getenv("STT_MIN_RMS", "450"))
 VAD_RATIO_THRESHOLD = float(os.getenv("STT_VAD_RATIO_THRESHOLD", "0.55"))
@@ -579,14 +587,24 @@ async def _remote_transcribe(prepared: PreparedAudio, session_id: str = None, fo
         raise RuntimeError("GROQ_API_KEY is not set — cannot call Groq Whisper API")
 
     client = await _get_client()
+<<<<<<< HEAD
 
     files = {"file": ("utterance.wav", prepared.wav_bytes, "audio/wav")}
     data = {
         "model": STT_MODEL_HINT,        # whisper-large-v3-turbo
+=======
+    files = {"audio": ("utterance.wav", prepared.wav_bytes, "audio/wav")}
+    data = {
+        "task": "transcribe",
+        "model": STT_MODEL_HINT,
+        "initial_prompt": _INITIAL_PROMPT,
+        "condition_on_previous_text": "false",
+>>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
         "temperature": "0",
         "response_format": "verbose_json",  # gives us language + segments
     }
 
+<<<<<<< HEAD
     saved_language = None
     if session_id:
         try:
@@ -615,6 +633,13 @@ async def _remote_transcribe(prepared: PreparedAudio, session_id: str = None, fo
     response = await client.post(STT_API_URL, files=files, data=data, headers=headers)
     if response.status_code != 200:
         logger.error("Groq 400 detail: %s", response.text)
+=======
+    lang = os.getenv("STT_LANGUAGE", "")
+    if lang:
+        data["language"] = lang
+
+    response = await client.post(STT_API_URL, files=files, data=data)
+>>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
     response.raise_for_status()
     raw = response.json()
 
@@ -653,6 +678,7 @@ async def _remote_transcribe(prepared: PreparedAudio, session_id: str = None, fo
 def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, state: SttSessionState) -> dict:
     text = _normalize_text(_extract_text(payload))
     logger.info("Extracted transcript=%r", text)
+<<<<<<< HEAD
 
     detected_language_raw = (payload.get("language") or "").strip().lower()
     if len(detected_language_raw) <= 3:
@@ -667,6 +693,8 @@ def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, st
 
     logger.info("STT detected language raw=%r mapped=%r", detected_language_raw, language_code)
 
+=======
+>>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
     no_speech_prob = _extract_float(payload, "no_speech_prob", "noSpeechProb", default=0.0)
     avg_logprob = _extract_float(payload, "avg_logprob", "avgLogprob", default=0.0)
     lang_prob = _extract_float(payload, "language_probability", "languageProbability", default=1.0)
@@ -708,6 +736,7 @@ def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, st
             avg_logprob,
         )
         text = ""
+<<<<<<< HEAD
     elif avg_logprob and avg_logprob < -2.0 and is_non_english:
         logger.info(
             "STT rejected | rms=%d vad=%.2f duration_ms=%d confidence=%.3f avg_logprob=%.3f reason=very_low_confidence_non_en lang=%s text=%r",
@@ -720,6 +749,8 @@ def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, st
             text,
         )
         text = ""
+=======
+>>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
     elif lang_prob < LANG_CONF_THRESHOLD and forced_lang == "en":
         logger.info(
             "STT rejected | rms=%d vad=%.2f duration_ms=%d confidence=%.3f language_probability=%.3f reason=low_language_confidence",
