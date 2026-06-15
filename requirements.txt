@@ -7,58 +7,36 @@
 # ── Web framework ────────────────────────────────────────────────────────────
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
-# Required for UploadFile + Form (multipart) support in FastAPI
 python-multipart>=0.0.9
 
 # ── Data validation ──────────────────────────────────────────────────────────
 pydantic>=2.0.0
 
-# ── TTS engine ───────────────────────────────────────────────────────────────
-kokoro>=0.9.4
-# Kokoro is a lightweight English TTS engine with CUDA support when available.
-# On Windows, install espeak-ng if you want phoneme fallback support.
-
-# ── STT engine (local Whisper — no API key needed) ───────────────────────────
-faster-whisper>=1.0.0
-# Whisper dependencies (usually auto-installed; listed for clarity)
-torch>=2.0.0
+# ── STT — Groq Whisper API (replaces local faster-whisper) ───────────────────
+httpx>=0.27.0
 numpy>=1.24.0
 scipy>=1.10.0
 noisereduce>=3.0.0
-ffmpeg-python>=0.2.0   # Python bindings; also install ffmpeg binary on your OS
-
-# ── LLM — Anthropic Claude ───────────────────────────────────────────────────
-anthropic>=0.25.0
-
-# ── Database — async MySQL via SQLAlchemy ────────────────────────────────────
-sqlalchemy>=2.0.0
-aiomysql>=0.2.0
-# For password characters that need URL-escaping in the connection string
-PyMySQL>=1.1.0         # aiomysql uses PyMySQL under the hood
-
-# ── Environment variable loading ─────────────────────────────────────────────
-python-dotenv>=1.0.0
-
-# ── HTTP client for ClinicQueue ──────────────────────────────────────────────
-httpx>=0.27.0
-
-# ── Transcript language filtering ─────────────────────────────────────────────
-langdetect>=1.0.9
-
-# ------------------
-# Production STT helpers
-# ------------------
-webrtcvad>=2.0.10
+webrtcvad-wheels       # Windows-compatible pre-compiled build
 soundfile>=0.12.1
-noisereduce>=2.0.1
-librosa>=0.10.0
-torchaudio>=2.0.2
 
-
-# ADD these, REMOVE kokoro
+# ── TTS — edge-tts + pydub (replaces Kokoro) ─────────────────────────────────
 edge-tts>=6.1.9
 pydub>=0.25.1
+miniaudio>=1.52
+# Also requires ffmpeg binary on your OS (not a pip package):
+# Windows: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+# Ubuntu:  sudo apt install ffmpeg
 
-# REMOVE or comment out:
-# kokoro
-# faster-whisper
+# ── LLM — Groq API (replaces Ollama) ─────────────────────────────────────────
+groq>=0.9.0
+
+# ── Database — async MySQL ────────────────────────────────────────────────────
+sqlalchemy>=2.0.0
+aiomysql>=0.2.0
+PyMySQL>=1.1.0
+
+# ── Environment & utilities ───────────────────────────────────────────────────
+python-dotenv>=1.0.0
+langdetect>=1.0.9
+aiohttp>=3.9.0

@@ -13,10 +13,12 @@ import hashlib
 import io
 import logging
 import os
+import re
 import time
+import unicodedata
 import wave
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 import noisereduce as nr
@@ -43,6 +45,73 @@ NO_SPEECH_THRESHOLD = float(os.getenv("STT_NO_SPEECH_THRESHOLD", "0.65"))
 LOG_PROB_THRESHOLD = float(os.getenv("STT_LOG_PROB_THRESHOLD", "-1.15"))
 LANG_CONF_THRESHOLD = float(os.getenv("STT_LANG_CONF_THRESHOLD", "0.35"))
 SESSION_STATE_TTL_SECONDS = float(os.getenv("STT_SESSION_STATE_TTL_SECONDS", "1800"))
+
+LANGUAGE_NAME_TO_CODE = {
+    "english": "en",
+    "hindi": "hi",
+    "marathi": "mr",
+    "urdu": "ur",
+    "tamil": "ta",
+    "telugu": "te",
+    "gujarati": "gu",
+    "bengali": "bn",
+    "kannada": "kn",
+    "punjabi": "pa",
+    "malayalam": "ml",
+}
+
+# Remap languages that sound identical to supported ones on phone calls
+LANGUAGE_REMAP = {
+    "ur": "hi",
+}
+
+# ── Self-detecting Language helpers ──────────────────────────────────────────
+
+def _detect_language_from_script(text: str) -> str | None:
+    for char in text:
+        block = unicodedata.name(char, "").split()[0] if unicodedata.name(char, "") else ""
+        if block == "DEVANAGARI":
+            return "hi"
+    return None  # couldn't determine from script
+
+
+ROMAN_HINDI_KEYWORDS = {
+    "mujhe", "bukhar", "hai", "nahi", "nahin", "nahee", "theek", "thik", "dard",
+    "khansi", "khaansi", "khaasi", "jukham", "jukam", "sardi", "ultee", "ulti",
+    "chakar", "chakkar", "kamzori", "kamjori", "pait", "bhai", "namaste", "pranam",
+    "achha", "acha", "bimar", "beemar", "ilaj", "dawa", "dawai", "goli", "badan",
+    "sar", "takleef", "taklif", "pareshan", "pareshani", "bahut", "bohot", "bhut",
+    "aaram", "aaraam", "saans", "sans", "khujli", "dino", "dinon", "hafta", "hafte",
+    "mahina", "mahine", "ghante", "ghanta", "mera", "meri", "mere", "aap", "tum",
+    "hume", "humein", "aapka", "aapki", "aapke", "kya", "kab", "kaise", "kyun",
+    "kyon", "kuch", "hoga", "hogi", "gaya", "gayi", "gaye", "hua", "hui", "hue",
+    "tha", "thi", "the", "raha", "rahi", "rahe"
+}
+
+
+def _contains_roman_hindi(text: str) -> bool:
+    if not text:
+        return False
+    # Extract only clean alphabetic words
+    words = re.findall(r"\b[a-zA-Z]+\b", text.lower())
+    for word in words:
+        if word in ROMAN_HINDI_KEYWORDS:
+            return True
+    return False
+
+
+HALLUCINATION_PATTERNS = re.compile(
+    r"^(the next|thank you|thanks|subscribe|please|uh|um|"
+    r"the date of|i don't know|okay|yes|no)(?:[,.\s]|$)",
+    re.IGNORECASE
+)
+
+
+def _is_likely_hallucination(text: str, avg_logprob: float) -> bool:
+    if avg_logprob < -1.0 and HALLUCINATION_PATTERNS.match(text.strip()):
+        return True
+    return False
+
 
 _HALLUCINATION_PHRASES = (
     "thank you very much",
@@ -186,6 +255,11 @@ class SttSessionState:
     last_seen: float = field(default_factory=time.monotonic)
     recent_hashes: list[str] = field(default_factory=list)
     hallucination_counts: dict[str, int] = field(default_factory=dict)
+
+
+class SttResult(NamedTuple):
+    transcript: str
+    language: str
 
 
 @dataclass(frozen=True)
@@ -495,7 +569,7 @@ def _extract_float(payload: dict[str, Any], *keys: str, default: float = 0.0) ->
 
 
 # NEW
-async def _remote_transcribe(prepared: PreparedAudio) -> dict:
+async def _remote_transcribe(prepared: PreparedAudio, session_id: str = None, force_language: str = None) -> dict:
     """
     Calls Groq Whisper API instead of remote Faster-Whisper server.
     Groq returns OpenAI-compatible JSON: { "text": "...", "language": "...", ... }
@@ -513,31 +587,45 @@ async def _remote_transcribe(prepared: PreparedAudio) -> dict:
         "response_format": "verbose_json",  # gives us language + segments
     }
 
-    lang = os.getenv("STT_LANGUAGE", "")
-    if lang:
+    saved_language = None
+    if session_id:
+        try:
+            import redis.asyncio as aioredis
+            _r = aioredis.from_url("redis://localhost:6379/0")
+            val = await _r.get(f"voice:{session_id}:language")
+            saved_language = val.decode() if val else None
+            await _r.aclose()
+        except Exception:
+            saved_language = None
+
+    lang = force_language or saved_language or os.getenv("STT_LANGUAGE", "")
+    if lang and lang != "en":
         data["language"] = lang
 
     if _INITIAL_PROMPT:
-        data["prompt"] = _INITIAL_PROMPT
+        prompt_value = _INITIAL_PROMPT
+        # Final hard limit guard — never exceed 896 chars regardless of how prompt was built
+        if len(prompt_value) > 890:
+            prompt_value = prompt_value[:890]
+            logger.warning("[STT] Prompt hard-truncated to 890 chars before Groq API call (original=%d)", len(_INITIAL_PROMPT))
+        data["prompt"] = prompt_value
 
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
 
     response = await client.post(STT_API_URL, files=files, data=data, headers=headers)
+    if response.status_code != 200:
+        logger.error("Groq 400 detail: %s", response.text)
     response.raise_for_status()
-    payload = response.json()
+    raw = response.json()
 
-    logger.info(
-        "Groq Whisper raw response keys=%s text=%r",
-        list(payload.keys()) if isinstance(payload, dict) else type(payload),
-        str(payload.get("text", ""))[:80],
-    )
+    logger.info("Groq Whisper raw response keys=%s text=%r language=%r", list(raw.keys()), raw.get("text",""), raw.get("language",""))
 
     # Normalize Groq response → shape that _validate_remote_result() expects:
     # { "text": "...", "language_probability": 1.0, "segments": [...] }
     # Groq verbose_json already has "text" and "segments".
     # We map segment fields to the camelCase/snake_case keys _validate_remote_result reads.
     normalized_segments = []
-    for seg in payload.get("segments") or []:
+    for seg in raw.get("segments") or []:
         normalized_segments.append({
             "text":           seg.get("text", ""),
             "no_speech_prob": seg.get("no_speech_prob", 0.0),
@@ -545,10 +633,10 @@ async def _remote_transcribe(prepared: PreparedAudio) -> dict:
         })
 
     return {
-        "text":                 payload.get("text", ""),
+        "text":                 raw.get("text", ""),
         # Groq doesn't return language_probability — default 1.0 (it's already filtered)
         "language_probability": 1.0,
-        "language":             payload.get("language", ""),
+        "language":             raw.get("language", ""),
         "segments":             normalized_segments,
         # top-level confidence proxies (average across segments if present)
         "no_speech_prob":       (
@@ -565,6 +653,20 @@ async def _remote_transcribe(prepared: PreparedAudio) -> dict:
 def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, state: SttSessionState) -> dict:
     text = _normalize_text(_extract_text(payload))
     logger.info("Extracted transcript=%r", text)
+
+    detected_language_raw = (payload.get("language") or "").strip().lower()
+    if len(detected_language_raw) <= 3:
+        language_code = detected_language_raw or "en"
+    else:
+        language_code = LANGUAGE_NAME_TO_CODE.get(detected_language_raw, "en")
+    language_code = LANGUAGE_REMAP.get(language_code, language_code)
+
+    script_lang = _detect_language_from_script(text)
+    if script_lang:
+        language_code = script_lang  # trust script over Groq's label
+
+    logger.info("STT detected language raw=%r mapped=%r", detected_language_raw, language_code)
+
     no_speech_prob = _extract_float(payload, "no_speech_prob", "noSpeechProb", default=0.0)
     avg_logprob = _extract_float(payload, "avg_logprob", "avgLogprob", default=0.0)
     lang_prob = _extract_float(payload, "language_probability", "languageProbability", default=1.0)
@@ -574,7 +676,9 @@ def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, st
     duration_ms = prepared.duration_ms
     forced_lang = os.getenv("STT_LANGUAGE", "")
 
-    if _segment_confidence_is_low(payload):
+    is_non_english = language_code != "en"
+
+    if _segment_confidence_is_low(payload) and not is_non_english:
         logger.info(
             "STT rejected | rms=%d vad=%.2f duration_ms=%d confidence=%.3f reason=low_segment_confidence text=%r",
             prepared.rms,
@@ -594,7 +698,7 @@ def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, st
             no_speech_prob,
         )
         text = ""
-    elif avg_logprob and avg_logprob < LOG_PROB_THRESHOLD:
+    elif avg_logprob and avg_logprob < LOG_PROB_THRESHOLD and not is_non_english:
         logger.info(
             "STT rejected | rms=%d vad=%.2f duration_ms=%d confidence=%.3f avg_logprob=%.3f reason=low_confidence",
             prepared.rms,
@@ -602,6 +706,18 @@ def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, st
             duration_ms,
             confidence,
             avg_logprob,
+        )
+        text = ""
+    elif avg_logprob and avg_logprob < -2.0 and is_non_english:
+        logger.info(
+            "STT rejected | rms=%d vad=%.2f duration_ms=%d confidence=%.3f avg_logprob=%.3f reason=very_low_confidence_non_en lang=%s text=%r",
+            prepared.rms,
+            vad,
+            duration_ms,
+            confidence,
+            avg_logprob,
+            language_code,
+            text,
         )
         text = ""
     elif lang_prob < LANG_CONF_THRESHOLD and forced_lang == "en":
@@ -649,6 +765,7 @@ def _validate_remote_result(payload: dict[str, Any], prepared: PreparedAudio, st
         "duration_ms": prepared.duration_ms,
         "rms": prepared.rms,
         "confidence": confidence,
+        "language": language_code,
     }
 
 
@@ -694,9 +811,12 @@ async def transcribe(
     audio_bytes: bytes,
     session_id: str = "default",
     last_transcript: str = "",
-) -> str:
+) -> SttResult:
     result = await transcribe_with_meta(audio_bytes, session_id=session_id, last_transcript=last_transcript)
-    return result["transcript"]
+    return SttResult(
+        transcript=result["transcript"],
+        language=result.get("language", "en"),
+    )
 
 
 async def transcribe_with_meta(
@@ -781,7 +901,7 @@ async def transcribe_with_meta(
     async with lock:
         for attempt in range(2):
             try:
-                payload = await _remote_transcribe(prepared)
+                payload = await _remote_transcribe(prepared, session_id=session_id)
                 result = _validate_remote_result(payload, prepared, state)
                 break
             except asyncio.CancelledError:
@@ -801,6 +921,27 @@ async def transcribe_with_meta(
                 return {"transcript": "", "incomplete": False}
         else:
             return {"transcript": "", "incomplete": False}
+
+        # Check for hallucination or Romanized Hindi retry within lock
+        transcript = (result.get("transcript") or "").strip()
+        avg_logprob = result.get("avg_logprob", 0.0)
+
+        should_retry = False
+        retry_reason = ""
+        if _is_likely_hallucination(transcript, avg_logprob) and prepared.vad_ratio > 0.7:
+            should_retry = True
+            retry_reason = "hallucination"
+        elif _contains_roman_hindi(transcript) and prepared.vad_ratio > 0.7:
+            should_retry = True
+            retry_reason = "Romanized Hindi"
+
+        if should_retry:
+            logger.info("STT %s detected, retrying with language=hi hint session=%s", retry_reason, session_id)
+            try:
+                payload = await _remote_transcribe(prepared, session_id=session_id, force_language="hi")
+                result = _validate_remote_result(payload, prepared, state)
+            except Exception as exc:
+                logger.exception("STT retry failed session=%s: %s", session_id, exc)
 
     transcript = (result.get("transcript") or "").strip()
     state.last_audio_hash = prepared.audio_hash
@@ -828,4 +969,5 @@ async def transcribe_with_meta(
         "rms": result.get("rms", prepared.rms),
         "vad": prepared.vad_ratio,
         "confidence": result.get("confidence", 0.0),
+        "language": result.get("language", "en"),
     }

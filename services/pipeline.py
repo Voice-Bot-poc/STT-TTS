@@ -20,6 +20,8 @@ from functools import partial
 
 from fastapi import HTTPException
 
+import redis.asyncio as aioredis
+
 from services import stt
 from services import tts_util
 from services.tts_normalizer import normalize_for_tts
@@ -58,6 +60,7 @@ _PIPELINE_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 _PIPELINE_SESSION_LAST_SEEN: dict[str, float] = {}
 _PIPELINE_SESSION_LOCKS_GUARD = asyncio.Lock()
 _CLINICQUEUE_CLIENT: httpx.AsyncClient | None = None
+_redis_client = aioredis.from_url("redis://localhost:6379/0")
 
 _GOODBYE_INTENTS = {"bye", "goodbye", "thank you", "thanks", "thank you bye"}
 _GOODBYE_RESPONSE = os.getenv("GOODBYE_RESPONSE_TEXT", "Thank you. Goodbye.")
@@ -89,10 +92,13 @@ def _get_clinicqueue_client() -> httpx.AsyncClient:
 
 
 async def close_http_clients() -> None:
-    global _CLINICQUEUE_CLIENT
+    global _CLINICQUEUE_CLIENT, _redis_client
     if _CLINICQUEUE_CLIENT is not None:
         await _CLINICQUEUE_CLIENT.aclose()
         _CLINICQUEUE_CLIENT = None
+    if _redis_client is not None:
+        await _redis_client.aclose()
+        _redis_client = None
 
 
 async def _get_pipeline_session_lock(session_id: str) -> asyncio.Lock:
@@ -163,6 +169,7 @@ def _pcm_chunks_to_wav(pcm_chunks: list[bytes]) -> bytes:
 async def _synthesise_with_sentence_streaming(
     text: str,
     session_id: str,
+    language: str = "en",
 ) -> bytes:
     """
     Fix 4: Split text into sentences and feed them to Kokoro one-by-one.
@@ -187,7 +194,7 @@ async def _synthesise_with_sentence_streaming(
         from services.streaming_tts import get_streaming_tts_service, DEFAULT_CHUNK_MS
         tts_svc = get_streaming_tts_service()
         pcm_chunks: list[bytes] = []
-        async for chunk in tts_svc.stream_pcm(text, DEFAULT_CHUNK_MS, session_id=session_id):
+        async for chunk in tts_svc.stream_pcm(text, DEFAULT_CHUNK_MS, session_id=session_id, language=language):
             pcm_chunks.append(chunk)
         return _pcm_chunks_to_wav(pcm_chunks)
 
@@ -207,7 +214,7 @@ async def _synthesise_with_sentence_streaming(
             continue
         t_sentence_start = time.perf_counter()
 
-        async for chunk in tts_svc.stream_pcm(sentence, DEFAULT_CHUNK_MS, session_id=session_id):
+        async for chunk in tts_svc.stream_pcm(sentence, DEFAULT_CHUNK_MS, session_id=session_id, language=language):
             pcm_chunks.append(chunk)
 
         sentence_ms = _ms(t_sentence_start, time.perf_counter())
@@ -240,6 +247,7 @@ async def _synthesise_with_sentence_streaming(
 async def run_pipeline(
     session_id: str,
     audio_bytes: bytes,
+    audio_filename: str = "",
     phone_number: str = "",
     synthesize_tts: bool = True,
 ) -> ProcessResponse:
@@ -251,12 +259,32 @@ async def run_pipeline(
         # ------------------------------------------------------------------ STT
         t0 = time.perf_counter()
         logger.info("[STT] session=%s start bytes=%d phone_number=%r", session_id, len(audio_bytes), phone_number)
+        language = "en"
         try:
-            transcript = await stt.transcribe(audio_bytes, session_id=session_id)
+            stt_result = await stt.transcribe(audio_bytes, session_id=session_id)
+            transcript = stt_result.transcript
+            language = stt_result.language or "en"
         except Exception as exc:
             logger.warning("STT stage failed; returning empty transcript: %s", exc)
             transcript = ""
         t_stt = _ms(t0, time.perf_counter())
+
+        try:
+            redis_key = f"voice:{session_id}:language"
+            await _redis_client.set(redis_key, language, ex=int(_SESSION_RUNTIME_TTL_SECONDS))
+            logger.info("[Pipeline] Saved STT language=%s to Redis key=%s", language, redis_key)
+            
+            # Publish STT result for C# filler orchestration
+            chunk_number = audio_filename.split("-utterance-")[-1].split(".")[0] if "-utterance-" in audio_filename else "0"
+            pubsub_key = f"stt_ready:{session_id}:{chunk_number}"
+            import json
+            await _redis_client.publish(pubsub_key, json.dumps({
+                "language": language,
+                "transcript": transcript
+            }))
+            logger.info("[Pipeline] Published STT result to PubSub key=%s", pubsub_key)
+        except Exception as r_err:
+            logger.warning("[Pipeline] Redis SET/PUBLISH failed: %s", r_err)
 
         logger.info(
             "[STT] session=%s finished in %.1f ms transcript_chars=%d transcript=%r",
@@ -287,7 +315,15 @@ async def run_pipeline(
                 latency_ms=LatencyBreakdown(stt=int(t_stt), db_fetch=0, llm=0, db_write=0, tts=0, total=int(t_total)),
             )
 
-        logger.info("[STT] %.1f ms → %r", t_stt, transcript[:80])
+        logger.info("[STT] %.1f ms -> %r", t_stt, transcript[:80])
+
+        # ── Filler signal (non-blocking) ────────────────────────────────────
+        # The .NET orchestrator calls /filler in parallel with /process.
+        # This log confirms the transcript is ready for filler keyword matching.
+        logger.info(
+            "[FILLER] Transcript ready -- orchestrator should call /filler in parallel  session=%s transcript_preview=%r",
+            session_id, transcript[:80],
+        )
 
         if _is_goodbye_intent(transcript):
             mark_completed(session_id)
@@ -308,10 +344,9 @@ async def run_pipeline(
                 mark_tts_start(session_id)
                 response_text = normalize_for_tts(response_text)
                 # Goodbye is always short — direct synthesis is fine
-                loop = get_event_loop()
-                audio_base64, _duration = await loop.run_in_executor(
-                    None, partial(tts_util.synthesise_text, response_text)
-                )
+                wav_bytes = await _synthesise_with_sentence_streaming(response_text, session_id, language=language)
+                import base64
+                audio_base64 = base64.b64encode(wav_bytes).decode("utf-8")
             finally:
                 mark_tts_end(session_id)
             t_tts = _ms(t0, time.perf_counter())
@@ -333,6 +368,7 @@ async def run_pipeline(
                 session_id=session_id,
                 transcript=transcript,
                 phone_number=phone_number,
+                language=language,
             )
         except Exception as exc:
             logger.exception("ClinicQueue stage failed")
@@ -343,6 +379,22 @@ async def run_pipeline(
             "[ClinicQueue] %.1f ms → response_text=%r  intent=%r  booking_completed=%s",
             t_clinicqueue, response_text, intent, booking_completed,
         )
+
+        tts_language = (language or original_language or "en").strip() or "en"
+        logger.info(
+            "[Pipeline] tts_language resolved: clinicqueue_lang=%r stt_lang=%r final=%r session=%s",
+            original_language, language, tts_language, session_id,
+        )
+
+        try:
+            await _redis_client.set(
+                f"voice:{session_id}:tts_language",
+                tts_language,
+                ex=int(_SESSION_RUNTIME_TTL_SECONDS)
+            )
+            logger.info("[Pipeline] Saved TTS language=%s to Redis key=voice:%s:tts_language", tts_language, session_id)
+        except Exception as r_err:
+            logger.warning("[Pipeline] Redis SET failed for tts_language: %s", r_err)
 
         if not response_text or not response_text.strip():
             t_total = _ms(pipeline_start, time.perf_counter())
@@ -388,7 +440,7 @@ async def run_pipeline(
         try:
             mark_tts_start(session_id)
             # ── Fix 4: sentence-by-sentence synthesis instead of one big chunk ──
-            wav_bytes = await _synthesise_with_sentence_streaming(tts_text, session_id)
+            wav_bytes = await _synthesise_with_sentence_streaming(tts_text, session_id, language=tts_language)
             import base64
             audio_base64 = base64.b64encode(wav_bytes).decode("utf-8")
         except Exception as exc:
@@ -485,6 +537,7 @@ async def _call_clinicqueue(
     session_id: str,
     transcript: str,
     phone_number: str = "",
+    language: str = "en",
 ) -> tuple[str, str, bool, str, str, str]:
     clinicqueue_phone_number = _normalize_phone_number(phone_number, session_id)
     if not clinicqueue_phone_number:
@@ -495,6 +548,7 @@ async def _call_clinicqueue(
         "transcript": transcript,
         "sessionId": voice_session_id,
         "phoneNumber": clinicqueue_phone_number,
+        "detectedLanguage": language,
     }
     logger.info("[ClinicQueue] request JSON body: %s", json.dumps(payload, ensure_ascii=False))
     logger.info(
@@ -524,7 +578,11 @@ async def _call_clinicqueue(
         final_output = data.get("final_output") or {}
         english_reply = (english_output.get("reply_message") or "").strip()
         final_reply = (final_output.get("reply_message") or "").strip()
-        original_language = (data.get("original_language") or "").strip()
+        original_language = (
+            data.get("original_language")
+            or data.get("detectedLanguage")
+            or ""
+        ).strip()
 
         response_text = (data.get("responseText") or "").strip()
         response_source = "responseText"

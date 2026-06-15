@@ -19,7 +19,7 @@ def synthesise_text(text: str) -> tuple[str, float]:
     Legacy full-audio helper backed by the streaming TTS engine.
     The realtime WebRTC path uses /tts/pcm-stream and does not call this helper.
     """
-    logger.info("TTS (pipeline): collecting Kokoro streaming synthesis for %d chars", len(text))
+    logger.info("TTS (pipeline): collecting streaming synthesis for %d chars", len(text))
 
     chunks: list[bytes] = []
     chunks.extend(get_streaming_tts_service().stream_pcm_sync(text, DEFAULT_CHUNK_MS))

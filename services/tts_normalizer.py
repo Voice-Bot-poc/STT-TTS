@@ -21,6 +21,38 @@ _DIGIT_WORDS = {
     "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
 }
 
+_HINDI_ONES = [
+    "", "एक", "दो", "तीन", "चार", "पाँच", "छह", "सात", "आठ", "नौ",
+    "दस", "ग्यारह", "बारह", "तेरह", "चौदह", "पंद्रह", "सोलह", "सत्रह",
+    "अठारह", "उन्नीस", "बीस", "इक्कीस", "बाईस", "तेईस", "चौबीस",
+    "पच्चीस", "छब्बीस", "सत्ताईस", "अट्ठाईस", "उनतीस", "तीस",
+    "इकतीस", "बत्तीस", "तैंतीस", "चौंतीस", "पैंतीस", "छत्तीस",
+    "सैंतीस", "अड़तीस", "उनतालीस", "चालीस", "इकतालीस", "बयालीस",
+    "तैंतालीस", "चवालीस", "पैंतालीस", "छियालीस", "सैंतालीस",
+    "अड़तालीस", "उनचास", "पचास", "इक्यावन", "बावन", "तिरेपन",
+    "चौवन", "पचपन", "छप्पन", "सत्तावन", "अट्ठावन", "उनसठ", "साठ",
+]
+
+_HINDI_TENS = [
+    "", "", "बीस", "तीस", "चालीस", "पचास", "साठ", "सत्तर", "अस्सी", "नब्बे",
+]
+
+_HINDI_MONTHS = [
+    "", "जनवरी", "फरवरी", "मार्च", "अप्रैल", "मई", "जून",
+    "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर",
+]
+
+_HINDI_ORDINALS = {
+    1: "पहली", 2: "दूसरी", 3: "तीसरी", 4: "चौथी", 5: "पाँचवीं",
+    6: "छठी", 7: "सातवीं", 8: "आठवीं", 9: "नौवीं", 10: "दसवीं",
+    11: "ग्यारहवीं", 12: "बारहवीं", 13: "तेरहवीं", 14: "चौदहवीं",
+    15: "पंद्रहवीं", 16: "सोलहवीं", 17: "सत्रहवीं", 18: "अठारहवीं",
+    19: "उन्नीसवीं", 20: "बीसवीं", 21: "इक्कीसवीं", 22: "बाईसवीं",
+    23: "तेईसवीं", 24: "चौबीसवीं", 25: "पच्चीसवीं", 26: "छब्बीसवीं",
+    27: "सत्ताईसवीं", 28: "अट्ठाईसवीं", 29: "उनतीसवीं", 30: "तीसवीं",
+    31: "इकतीसवीं",
+}
+
 
 def _number_to_words(n: int) -> str:
     if n == 0:
@@ -54,6 +86,39 @@ def _number_to_words(n: int) -> str:
     elif n > 0:
         parts.append(ones[n])
     return " ".join(parts)
+
+
+def _number_to_hindi_words(n: int) -> str:
+    """Convert integer to Hindi spoken words."""
+    if n == 0:
+        return "शून्य"
+    if n < 0:
+        return f"माइनस {_number_to_hindi_words(-n)}"
+    if n <= 60:
+        return _HINDI_ONES[n]
+    if n < 100:
+        tens = _HINDI_TENS[n // 10]
+        ones = _HINDI_ONES[n % 10]
+        if ones:
+            return f"{tens} {ones}"
+        return tens
+    if n < 1000:
+        hundreds = _HINDI_ONES[n // 100]
+        rest = n % 100
+        if rest == 0:
+            return f"{hundreds} सौ"
+        return f"{hundreds} सौ {_number_to_hindi_words(rest)}"
+    if n < 100000:
+        thousands = _number_to_hindi_words(n // 1000)
+        rest = n % 1000
+        if rest == 0:
+            return f"{thousands} हज़ार"
+        return f"{thousands} हज़ार {_number_to_hindi_words(rest)}"
+    lakhs = _number_to_hindi_words(n // 100000)
+    rest = n % 100000
+    if rest == 0:
+        return f"{lakhs} लाख"
+    return f"{lakhs} लाख {_number_to_hindi_words(rest)}"
 
 
 def _number_to_ordinal_words(n: int) -> str:
@@ -134,9 +199,109 @@ def _letters_to_spoken(letters: str) -> str:
     return " ".join(letter.upper() for letter in letters if letter.isalpha())
 
 
-def normalize_for_tts(text: str) -> str:
+def _time_to_hindi_words(hour24: int, minute: int) -> str:
+    """Convert 24h time to Hindi spoken form."""
+    hour12 = hour24 % 12 or 12
+    hour_word = _number_to_hindi_words(hour12)
+    if minute == 0:
+        return f"{hour_word} बजे"
+    minute_word = _number_to_hindi_words(minute)
+    return f"{hour_word} बजकर {minute_word} मिनट"
+
+
+def _date_to_hindi_words(day: int, month: int, year: int) -> str:
+    """Convert date to Hindi spoken form."""
+    day_word = _HINDI_ORDINALS.get(day, f"{_number_to_hindi_words(day)}वीं")
+    month_word = _HINDI_MONTHS[month]
+    year_word = _number_to_hindi_words(year % 100) if year % 100 != 0 else _number_to_hindi_words(year // 100) + " सौ"
+    return f"{day_word} {month_word} {year_word}"
+
+
+import unicodedata as _unicodedata
+
+def _is_hindi_text(text: str) -> bool:
+    """Return True if text contains significant Devanagari characters."""
+    devanagari = sum(1 for c in text if c.isalpha() and "DEVANAGARI" in _unicodedata.name(c, ""))
+    total_alpha = sum(1 for c in text if c.isalpha())
+    return total_alpha > 0 and (devanagari / total_alpha) > 0.3
+
+
+def normalize_for_tts_hindi(text: str) -> str:
+    """
+    Normalize dates, times, and numbers in Hindi text to Hindi spoken form.
+    Called when the TTS response text is detected as Hindi (Devanagari script).
+    """
     if not text:
         return ""
+
+    # Times: HH:MM or HH.MM with optional AM/PM or बजे
+    def replace_time_hindi(m: re.Match) -> str:
+        hour = int(m.group(1))
+        minute = int(m.group(2))
+        return _time_to_hindi_words(hour, minute)
+
+    text = re.sub(
+        r"\b(\d{1,2})[:.](\d{2})([:.](\d{2}))?(\s*(AM|PM|am|pm))?\b",
+        replace_time_hindi,
+        text,
+    )
+
+    # Dates: YYYY-MM-DD ISO
+    def replace_date_iso_hindi(m: re.Match) -> str:
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return _date_to_hindi_words(day, month, year)
+        return m.group(0)
+
+    text = re.sub(r"\b(\d{4})-(\d{2})-(\d{2})\b", replace_date_iso_hindi, text)
+
+    # Dates: DD/MM/YYYY
+    def replace_date_slash_hindi(m: re.Match) -> str:
+        day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return _date_to_hindi_words(day, month, year)
+        return m.group(0)
+
+    text = re.sub(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", replace_date_slash_hindi, text)
+
+    # Standalone numbers
+    def replace_number_hindi(m: re.Match) -> str:
+        raw = m.group(0).replace(",", "")
+        try:
+            return _number_to_hindi_words(int(raw))
+        except ValueError:
+            return m.group(0)
+
+    text = re.sub(r"\b\d[\d,]*\b", replace_number_hindi, text)
+
+    # Currency
+    def replace_currency_hindi(m: re.Match) -> str:
+        symbol = m.group(1)
+        raw = m.group(2).replace(",", "")
+        try:
+            amount = int(raw)
+        except ValueError:
+            return m.group(0)
+        words = _number_to_hindi_words(amount)
+        unit = "रुपये" if symbol == "₹" else "डॉलर"
+        return f"{words} {unit}"
+
+    text = re.sub(r"([₹$])([\d,]+)", replace_currency_hindi, text)
+
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_for_tts(text: str, language: str = "en") -> str:
+    """
+    Normalize text for TTS. Routes to Hindi normalization if language='hi'
+    or if Devanagari script is detected in the text.
+    """
+    if not text:
+        return ""
+
+    # Auto-detect Hindi from script if language not explicitly set
+    if language == "hi" or _is_hindi_text(text):
+        return normalize_for_tts_hindi(text)
 
     # --- DATES: DD/MM/YYYY or DD-MM-YYYY (day first, then month) ---
     def replace_date_slash(m: re.Match) -> str:
@@ -248,6 +413,7 @@ if __name__ == "__main__":
                                                                   "Available slots are today at ten am or tomorrow at nine am"),
         ("Earliest slot is tomorrow at 9:00 AM",                  "Earliest slot is tomorrow at nine am"),
         ("Your appointment is on 2026-05-28 at 15:00",            "Your appointment is on May twenty eighth twenty six at three pm"),
+        ("तुम्हारी अपॉइंटमेंट 12:00 बजे बुक हो गई है", "तुम्हारी अपॉइंटमेंट बारह बजे बुक हो गई है"),
     ]
     print(f"{'Input':<55} {'Expected':<45} {'Got':<45} Result")
     print("-" * 160)

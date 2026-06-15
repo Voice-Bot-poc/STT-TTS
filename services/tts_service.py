@@ -72,6 +72,9 @@ def _synthesise_streaming_tts(text: str, speed: float | None = None, fmt: AudioF
 
 
 class TTSService:
+    def __init__(self) -> None:
+        self._provider = os.getenv("TTS_PROVIDER", "edge").lower()
+
     def synthesise(self, req: TTSRequest) -> TTSResult:
         if not req.text or not req.text.strip():
             raise ValueError("text must be a non-empty string")
@@ -80,20 +83,18 @@ class TTSService:
         if normalized_text != req.text:
             logger.info("TTS normalized text from %d to %d chars", len(req.text), len(normalized_text))
 
-        slow = req.voice == "slow"
-        default_speed = float(os.getenv("KOKORO_SPEED", "0.80"))
-        slow_speed = float(os.getenv("KOKORO_SLOW_SPEED", "0.78"))
-        effective_speed = slow_speed if slow else default_speed
         logger.info(
-            "TTS request: %d chars, voice=%s, engine=kokoro speed=%.2f target_rate=%d chunk_ms=%d",
+            "TTS request: %d chars, voice=%s, engine=%s target_rate=%d chunk_ms=%d",
             len(normalized_text),
             req.voice,
-            effective_speed,
+            self._provider,
             TARGET_SAMPLE_RATE,
             DEFAULT_CHUNK_MS,
         )
 
-        pcm, duration = _synthesise_streaming_tts(normalized_text, speed=effective_speed, fmt="wav")
+        # speed=None lets the backend use its own native speed setting
+        # (e.g. EDGE_TTS_SPEED="-20%" for edge-tts)
+        pcm, duration = _synthesise_streaming_tts(normalized_text, speed=None, fmt="wav")
         audio_bytes = _pcm_to_wav(pcm)
         return TTSResult(
             audio_base64=base64.b64encode(audio_bytes).decode("utf-8"),
