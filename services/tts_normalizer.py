@@ -33,7 +33,6 @@ _HINDI_ONES = [
     "चौवन", "पचपन", "छप्पन", "सत्तावन", "अट्ठावन", "उनसठ", "साठ",
 ]
 
-<<<<<<< HEAD
 _HINDI_TENS = [
     "", "", "बीस", "तीस", "चालीस", "पचास", "साठ", "सत्तर", "अस्सी", "नब्बे",
 ]
@@ -55,8 +54,6 @@ _HINDI_ORDINALS = {
 }
 
 
-=======
->>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
 def _number_to_words(n: int) -> str:
     if n == 0:
         return "zero"
@@ -91,7 +88,6 @@ def _number_to_words(n: int) -> str:
     return " ".join(parts)
 
 
-<<<<<<< HEAD
 def _number_to_hindi_words(n: int) -> str:
     """Convert integer to Hindi spoken words."""
     if n == 0:
@@ -125,8 +121,6 @@ def _number_to_hindi_words(n: int) -> str:
     return f"{lakhs} लाख {_number_to_hindi_words(rest)}"
 
 
-=======
->>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
 def _number_to_ordinal_words(n: int) -> str:
     if n in _ORDINAL_WORDS:
         return _ORDINAL_WORDS[n]
@@ -206,11 +200,14 @@ def _letters_to_spoken(letters: str) -> str:
 
 
 def _time_to_hindi_words(hour24: int, minute: int) -> str:
-    """Convert 24h time to Hindi spoken form."""
+    """Convert 24h time to Hindi spoken form WITHOUT trailing बजे.
+    The word बजे is already present in the source text after the time;
+    adding it here would cause duplication.
+    """
     hour12 = hour24 % 12 or 12
     hour_word = _number_to_hindi_words(hour12)
     if minute == 0:
-        return f"{hour_word} बजे"
+        return hour_word
     minute_word = _number_to_hindi_words(minute)
     return f"{hour_word} बजकर {minute_word} मिनट"
 
@@ -240,7 +237,6 @@ def normalize_for_tts_hindi(text: str) -> str:
     if not text:
         return ""
 
-<<<<<<< HEAD
     # Times: HH:MM or HH.MM with optional AM/PM or बजे
     def replace_time_hindi(m: re.Match) -> str:
         hour = int(m.group(1))
@@ -252,6 +248,12 @@ def normalize_for_tts_hindi(text: str) -> str:
         replace_time_hindi,
         text,
     )
+
+    # Clean up double बजे that can occur for whole-hour times.
+    # _time_to_hindi_words now returns e.g. "ग्यारह" (no बजे), so if source text
+    # already had "11:00 बजे", the replacement gives "ग्यारह बजे" — correct.
+    # Safeguard: if somehow "बजे बजे" still appears, deduplicate.
+    text = re.sub(r'(\S+)\s+बजे\s+बजे', r'\1 बजे', text)
 
     # Dates: YYYY-MM-DD ISO
     def replace_date_iso_hindi(m: re.Match) -> str:
@@ -310,8 +312,6 @@ def normalize_for_tts(text: str, language: str = "en") -> str:
     if language == "hi" or _is_hindi_text(text):
         return normalize_for_tts_hindi(text)
 
-=======
->>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
     # --- DATES: DD/MM/YYYY or DD-MM-YYYY (day first, then month) ---
     def replace_date_slash(m: re.Match) -> str:
         day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -422,10 +422,7 @@ if __name__ == "__main__":
                                                                   "Available slots are today at ten am or tomorrow at nine am"),
         ("Earliest slot is tomorrow at 9:00 AM",                  "Earliest slot is tomorrow at nine am"),
         ("Your appointment is on 2026-05-28 at 15:00",            "Your appointment is on May twenty eighth twenty six at three pm"),
-<<<<<<< HEAD
         ("तुम्हारी अपॉइंटमेंट 12:00 बजे बुक हो गई है", "तुम्हारी अपॉइंटमेंट बारह बजे बुक हो गई है"),
-=======
->>>>>>> 59d941671e617b75a530df53f00dd66b340d1b58
     ]
     print(f"{'Input':<55} {'Expected':<45} {'Got':<45} Result")
     print("-" * 160)
