@@ -1,12 +1,42 @@
-# Web framework
+# ---------------------------------------------------------------------------
+# requirements.txt
+# Full dependency list for the VoiceBot STT-TTS + Pipeline microservice.
+# Install with:  pip install -r requirements.txt
+# ---------------------------------------------------------------------------
+
+# ── Web framework ────────────────────────────────────────────────────────────
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
 
-# TTS engine
-gTTS>=2.5.1
-
-# Audio transcoding — only needed for wav/ogg output; safe to remove if mp3-only
-pydub>=0.25.1
-
-# Pydantic (FastAPI uses this for request/response validation)
+# ── Data validation ──────────────────────────────────────────────────────────
 pydantic>=2.0.0
+
+# ── STT — Groq Whisper API (replaces local faster-whisper) ───────────────────
+httpx>=0.27.0
+numpy>=1.24.0
+scipy>=1.10.0
+noisereduce>=3.0.0
+webrtcvad-wheels       # Windows-compatible pre-compiled build
+soundfile>=0.12.1
+
+# ── TTS — edge-tts + pydub (replaces Kokoro) ─────────────────────────────────
+edge-tts>=6.1.9
+pydub>=0.25.1
+miniaudio>=1.52
+# Also requires ffmpeg binary on your OS (not a pip package):
+# Windows: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+# Ubuntu:  sudo apt install ffmpeg
+
+# ── LLM — Groq API (replaces Ollama) ─────────────────────────────────────────
+groq>=0.9.0
+
+# ── Database — async MySQL ────────────────────────────────────────────────────
+sqlalchemy>=2.0.0
+aiomysql>=0.2.0
+PyMySQL>=1.1.0
+
+# ── Environment & utilities ───────────────────────────────────────────────────
+python-dotenv>=1.0.0
+langdetect>=1.0.9
+aiohttp>=3.9.0

@@ -1,4 +1,12 @@
 vbenv/
-test_outputs/
+test/test_outputs/
 __pycache__/
-test.py
+test/test.py
+# ignore env and virtual env
+.env
+.venv/
+
+# ignore binaries
+*.exe
+venv/
+.venv/

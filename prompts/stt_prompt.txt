@@ -1,0 +1,10 @@
+Medical clinic appointment booking. Bilingual Hindi-English.
+
+fever, cold, cough, headache, body ache, vomiting, diarrhea, chest pain, stomach pain, dizziness, BP, diabetes.
+बुखार, सर्दी, खांसी, सिरदर्द, बदन दर्द, उल्टी, दस्त, पेट दर्द, चक्कर, शुगर।
+
+"I am having fever", "not feeling well", "book appointment", "cancel", "reschedule".
+"मुझे बुखार है", "तबीयत ठीक नहीं", "अपॉइंटमेंट बुक करना है"।
+
+appointment, doctor, OPD, follow-up.
+अपॉइंटमेंट, डॉक्टर, ओपीडी।
